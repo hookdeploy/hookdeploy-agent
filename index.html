@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HookDeploy Agent</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <div id="gate" class="gate">
+      <div class="gate-card">
+        <img
+          class="gate-logo"
+          src="https://static.hookdeploy.dev/icon.png"
+          alt="HookDeploy"
+          width="40"
+          height="40"
+        />
+        <h1>HookDeploy Agent</h1>
+        <p id="gate-host" class="gate-host mono">This machine</p>
+        <p class="enroll-copy">
+          This machine is not enrolled in an organization. Login opens the browser so you can attach it.
+        </p>
+        <p id="gate-error" class="error hidden"></p>
+        <p class="enroll-url-wrap hidden">
+          If the browser did not open,
+          <a class="enroll-url" href="#" target="_blank" rel="noreferrer">open the enroll URL</a>.
+        </p>
+        <button class="enroll-start" type="button">Login</button>
+        <div class="enroll-code-wrap hidden enroll-code">
+          <label>Code from the browser</label>
+          <input class="enroll-code-input mono" maxlength="12" autocomplete="off" />
+          <button class="enroll-submit" type="button">Submit code</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="app" class="hidden">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <img
+            class="brand-icon"
+            src="https://static.hookdeploy.dev/icon.png"
+            alt="HookDeploy"
+            width="28"
+            height="28"
+          />
+        </div>
+
+        <div class="org-switcher">
+          <button id="org-btn" class="org-btn" type="button" title="Switch organization">
+            <span id="org-name">No organization</span>
+            <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M7 15l5 5 5-5M7 9l5-5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <div id="org-menu" class="org-menu hidden" role="menu"></div>
+        </div>
+
+        <nav class="nav" aria-label="Agent">
+          <div class="nav-group-label">Agent</div>
+          <button class="nav-item active" type="button" data-page="dashboard">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1" stroke="currentColor" stroke-width="2"/><rect x="14" y="3" width="7" height="5" rx="1" stroke="currentColor" stroke-width="2"/><rect x="14" y="12" width="7" height="9" rx="1" stroke="currentColor" stroke-width="2"/><rect x="3" y="16" width="7" height="5" rx="1" stroke="currentColor" stroke-width="2"/></svg>
+            Dashboard
+          </button>
+          <button class="nav-item" type="button" data-page="endpoints">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.07 0l1.41-1.41a5 5 0 0 0-7.07-7.07L10 5.93" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M14 11a5 5 0 0 0-7.07 0L5.52 12.41a5 5 0 0 0 7.07 7.07L14 18.07" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            Endpoints
+          </button>
+          <button class="nav-item" type="button" data-page="taps">
+            <svg viewBox="1 3.5 22 18.5" fill="none" aria-hidden="true"><rect x="2" y="5" width="20" height="7" rx="3.5" stroke="currentColor" stroke-width="2"/><path d="M12 12v8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M9 20h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            Taps
+          </button>
+          <button class="nav-item" type="button" data-page="settings">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Settings
+          </button>
+        </nav>
+
+        <div class="sidebar-status">
+          <div class="status-line">
+            <span id="status-dot" class="dot disconnected" aria-hidden="true"></span>
+            <span id="status-phase">Disconnected</span>
+          </div>
+          <div class="agent-name-row">
+            <div id="agent-name" class="agent-name">—</div>
+            <button type="button" id="rename-agent" class="agent-rename" title="Rename this agent" aria-label="Rename this agent">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 20h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+          <div id="status-relay" class="status-relay hidden"></div>
+        </div>
+      </aside>
+
+      <div class="main">
+        <header class="page-bar">
+          <div class="page-bar-copy">
+            <h1 id="page-title">Dashboard</h1>
+            <p id="page-desc" class="muted">Overview of this agent</p>
+          </div>
+          <input
+            id="ep-search"
+            class="page-bar-search hidden"
+            type="search"
+            placeholder="Search endpoints"
+            autocomplete="off"
+            aria-label="Search endpoints by name"
+          />
+        </header>
+
+        <p id="error" class="error hidden"></p>
+
+        <div class="pages">
+          <section id="page-dashboard" class="page">
+            <div class="stat-row">
+              <div class="stat-card">
+                <div class="stat-label">Endpoints</div>
+                <div id="dash-ep-count" class="stat-value">0</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">Forwarding here</div>
+                <div id="dash-fwd-count" class="stat-value">0</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">Active taps</div>
+                <div id="dash-tap-count" class="stat-value">0</div>
+              </div>
+            </div>
+
+            <h2>Forwarding to this agent</h2>
+            <div id="dash-inbound" class="table-tray"></div>
+
+            <h2>Active taps</h2>
+            <div id="dash-taps" class="table-tray"></div>
+          </section>
+
+          <section id="page-endpoints" class="page hidden">
+            <div class="table-tray">
+              <div id="ep-table"></div>
+              <nav id="ep-pager" class="table-pager hidden" aria-label="Endpoints pagination"></nav>
+            </div>
+          </section>
+
+          <section id="page-taps" class="page hidden">
+            <div class="page-actions">
+              <button id="open-create-tap" type="button">+ Create new tap</button>
+            </div>
+            <h2>Active</h2>
+            <div id="taps-live" class="table-tray"></div>
+            <h2>Saved</h2>
+            <p class="muted saved-hint">Re-enable a saved tap to reuse its endpoint, destination, port, and path.</p>
+            <div id="taps-saved" class="table-tray"></div>
+          </section>
+
+          <section id="page-settings" class="page page-settings hidden">
+            <div class="settings-stack">
+              <section>
+                <h2>This agent</h2>
+                <p class="settings-lead">Shown in the sidebar and the dashboard. Clear the field to use this machine's hostname.</p>
+                <div class="panel-tray">
+                  <div class="panel-inner">
+                    <div class="panel-body">
+                      <div class="settings-meta">
+                        <div>
+                          <span class="settings-meta-label">Hostname</span>
+                          <span id="settings-hostname" class="settings-meta-value mono">—</span>
+                        </div>
+                      </div>
+                      <label class="field" for="settings-name">
+                        <span>Agent name</span>
+                        <input id="settings-name" maxlength="100" autocomplete="off" />
+                      </label>
+                    </div>
+                    <div class="panel-foot">
+                      <button id="save-name" type="button">Save name</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section>
+                <h2>Organization</h2>
+                <p class="settings-lead">This agent can belong to more than one organization.</p>
+                <div class="panel-tray">
+                  <div class="panel-inner">
+                    <div class="panel-body">
+                      <div class="settings-org-row">
+                        <div class="min-w-0">
+                          <p id="settings-org-name" class="settings-org-name">—</p>
+                          <p id="settings-org-id" class="settings-org-id mono"></p>
+                        </div>
+                        <span class="settings-pill">Active</span>
+                      </div>
+                      <section id="enroll-panel" class="enroll-panel">
+                        <p class="enroll-copy">
+                          Add another organization by finishing login in the browser, then enter the code here.
+                        </p>
+                        <p class="enroll-url-wrap hidden">
+                          If the browser did not open,
+                          <a class="enroll-url" href="#" target="_blank" rel="noreferrer">open the enroll URL</a>.
+                        </p>
+                        <div class="enroll-code-wrap hidden enroll-code">
+                          <label class="field">
+                            <span>Code from the browser</span>
+                            <input class="enroll-code-input mono" maxlength="12" autocomplete="off" />
+                          </label>
+                          <button class="enroll-submit" type="button">Submit code</button>
+                        </div>
+                      </section>
+                    </div>
+                    <div class="panel-foot">
+                      <button id="settings-add-org" type="button">Add organization</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section>
+                <h2 class="settings-danger-label">Danger zone</h2>
+                <div class="panel-tray panel-tray-danger">
+                  <div class="panel-inner">
+                    <div class="panel-body settings-danger-row">
+                      <div class="min-w-0">
+                        <p class="settings-org-name">Unenroll current organization</p>
+                        <p class="settings-hint">
+                          Removes this machine from the active organization. Live taps for that org stop. You can log in again later.
+                        </p>
+                        <p id="settings-status" class="settings-hint"></p>
+                      </div>
+                      <button id="settings-unenroll" type="button" class="stop">Unenroll</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div id="confirm-dialog" class="dialog-scrim hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <div class="dialog confirm-dialog">
+        <div class="dialog-head">
+          <div class="dialog-head-copy">
+            <h2 id="confirm-title">End tap?</h2>
+          </div>
+        </div>
+        <div class="dialog-body">
+          <p id="confirm-message">Would you like to end the active tap on this endpoint?</p>
+        </div>
+        <div class="dialog-foot">
+          <div class="dialog-foot-actions">
+            <button id="confirm-cancel" type="button" class="ghost">Cancel</button>
+            <button id="confirm-ok" type="button" class="stop">End tap</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="tap-dialog" class="dialog-scrim hidden" role="dialog" aria-modal="true" aria-labelledby="tap-dialog-title">
+      <div class="dialog dialog-tap">
+        <div class="dialog-head">
+          <div class="dialog-head-icon" aria-hidden="true">
+            <svg width="16" height="16" viewBox="1 3.5 22 18.5" fill="none">
+              <rect x="2" y="5" width="20" height="7" rx="3.5" stroke="currentColor" stroke-width="2"/>
+              <path d="M12 12v8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <path d="M9 20h6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="dialog-head-copy">
+            <h2 id="tap-dialog-title">Create tap</h2>
+            <p class="dialog-desc">Temporarily forward this endpoint to a process on this machine. The tap will end when this machine loses its connection or after 8 hours, whichever comes first.</p>
+          </div>
+          <button id="close-create-tap" type="button" class="dialog-close" aria-label="Close">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </button>
+        </div>
+        <div class="dialog-split">
+          <div class="dialog-col dialog-col-form">
+            <div class="field">
+              <span id="tap-endpoint-label">Endpoint</span>
+              <div class="hd-select" id="tap-endpoint" data-placeholder="Select endpoint">
+                <button
+                  type="button"
+                  class="hd-select-trigger"
+                  aria-labelledby="tap-endpoint-label"
+                  aria-haspopup="listbox"
+                  aria-expanded="false"
+                >
+                  <span class="hd-select-value is-placeholder">Select endpoint</span>
+                  <svg class="hd-select-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+                <div class="hd-select-menu hidden" role="listbox"></div>
+              </div>
+            </div>
+            <div class="field">
+              <span id="tap-dest-label">Destination</span>
+              <div class="hd-select" id="tap-dest" data-placeholder="Select destination">
+                <button
+                  type="button"
+                  class="hd-select-trigger"
+                  aria-labelledby="tap-dest-label"
+                  aria-haspopup="listbox"
+                  aria-expanded="false"
+                >
+                  <span class="hd-select-value is-placeholder">Select destination</span>
+                  <svg class="hd-select-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                </button>
+                <div class="hd-select-menu hidden" role="listbox"></div>
+              </div>
+            </div>
+            <div class="fields">
+              <label class="field" for="tap-port">
+                <span>Port</span>
+                <input id="tap-port" class="mono" type="number" min="1" max="65535" />
+              </label>
+              <label class="field" for="tap-path">
+                <span>Path</span>
+                <input id="tap-path" class="mono" value="/hooks" />
+              </label>
+            </div>
+          </div>
+          <div class="dialog-col dialog-col-ports">
+            <div class="row-between">
+              <span class="ports-heading">Listening services</span>
+              <button id="refresh-ports" type="button" class="ghost">Refresh</button>
+            </div>
+            <p class="ports-copy">Select a service to forward to or enter the port number manually on the left.</p>
+            <input
+              id="port-filter"
+              type="search"
+              placeholder="Filter by process or port"
+              autocomplete="off"
+            />
+            <ul id="ports" class="list ports"></ul>
+          </div>
+        </div>
+        <div class="dialog-foot">
+          <p id="tap-target" class="dialog-hint mono">Select an endpoint and destination, then a port.</p>
+          <div class="dialog-foot-actions">
+            <button id="cancel-create-tap" type="button" class="ghost">Cancel</button>
+            <button id="start-tap" type="button" disabled>Start tap</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
