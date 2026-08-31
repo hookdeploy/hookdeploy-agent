@@ -79,6 +79,26 @@ jobs:
 
       - run: npm ci
 
+      - name: Debug cert integrity
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          echo "Decoded file size:"
+          ls -la certificate.p12
+          echo "Decoded file SHA256:"
+          shasum -a 256 certificate.p12
+          echo "Raw secret length (should be 4528):"
+          echo -n "$APPLE_CERTIFICATE" | wc -c
+          echo "First 20 chars of secret (safe -- base64 has no sensitive structure at this length):"
+          echo -n "$APPLE_CERTIFICATE" | head -c 20
+          echo ""
+          echo "Last 20 chars of secret:"
+          echo -n "$APPLE_CERTIFICATE" | tail -c 20
+          echo ""
+          file certificate.p12
+
       - name: Import Apple Developer ID certificate
         if: runner.os == 'macOS'
         env:
