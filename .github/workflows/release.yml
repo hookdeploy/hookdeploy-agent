@@ -102,6 +102,14 @@ jobs:
               -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
           fi
           rm -f "$PEM" certificate.p12
+          # tauri-action also runs `security import` from APPLE_CERTIFICATE during
+          # codesign. Point that at the SHA1+3DES p12, not the original secret.
+          {
+            echo "APPLE_CERTIFICATE<<CERT_EOF"
+            openssl base64 -A -in "$LEGACY"
+            echo
+            echo "CERT_EOF"
+          } >> "$GITHUB_ENV"
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
@@ -136,7 +144,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE: ${{ env.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
