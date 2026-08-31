@@ -83,6 +83,7 @@ jobs:
         if: runner.os == 'macOS'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
           echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
           echo "Decoded file size:"
@@ -98,6 +99,15 @@ jobs:
           echo -n "$APPLE_CERTIFICATE" | tail -c 20
           echo ""
           file certificate.p12
+          echo "Password length:"
+          echo -n "$APPLE_CERTIFICATE_PASSWORD" | wc -c
+          python3 -c "import os; v=os.environ.get('APPLE_CERTIFICATE_PASSWORD',''); print('password_py_len', len(v)); print('trailing_cr', v.endswith(chr(13))); print('trailing_lf', v.endswith(chr(10))); print('leading_or_trailing_space', v!=v.strip())"
+          echo "openssl pkcs12 -noout on runner:"
+          if openssl pkcs12 -in certificate.p12 -noout -passin env:APPLE_CERTIFICATE_PASSWORD; then
+            echo "openssl: MAC OK"
+          else
+            echo "openssl: MAC FAIL exit=$?"
+          fi
 
       - name: Import Apple Developer ID certificate
         if: runner.os == 'macOS'
