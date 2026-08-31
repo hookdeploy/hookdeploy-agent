@@ -1,6 +1,9 @@
+import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 
 type Phase = "disconnected" | "connecting" | "connected" | "reconnecting" | "revoked";
 type Page = "dashboard" | "endpoints" | "taps" | "settings";
@@ -60,6 +63,7 @@ interface Snapshot {
   org_name: string | null;
   enroll_url: string | null;
   enroll_phase: { kind: string; url?: string; org?: string; message?: string };
+  online?: boolean;
 }
 
 interface TapHandle {
@@ -79,15 +83,17 @@ interface SavedTap {
   destName: string;
   port: number;
   path: string;
+  favorite?: boolean;
 }
 
 const NAME_KEY = "hookdeploy.agentName";
 const SAVED_KEY = "hookdeploy.savedTaps";
+const RECENT_LIMIT = 5;
 const EP_PAGE_SIZE = 10;
 const PAGES: Record<Page, { title: string; desc: string }> = {
   dashboard: { title: "Dashboard", desc: "Overview of this agent" },
   endpoints: { title: "Endpoints", desc: "Endpoints in this organization" },
-  taps: { title: "Taps", desc: "Live taps and saved shortcuts" },
+  taps: { title: "Taps", desc: "Live taps, favorites, and recent shortcuts" },
   settings: { title: "Settings", desc: "This agent and enrollment" },
 };
 
@@ -98,6 +104,12 @@ const COPY_ICON =
   '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor" stroke-width="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="2"/></svg>';
 const CHECK_ICON =
   '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const MORE_ICON =
+  '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="12" cy="19" r="1.7"/></svg>';
+const ENDPOINT_ICON =
+  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.07 0l1.41-1.41a5 5 0 0 0-7.07-7.07L10 5.93" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M14 11a5 5 0 0 0-7.07 0L5.52 12.41a5 5 0 0 0 7.07 7.07L14 18.07" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+const DEST_ICON =
+  '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><rect x="18" y="5" width="3" height="14" rx="1" stroke="currentColor" stroke-width="2"/></svg>';
 
 let orgs: OrgInfo[] = [];
 let catalog: Catalog = { endpoints: [], taps: [] };
@@ -107,6 +119,16 @@ let page: Page = "dashboard";
 let endpointsPage = 1;
 let selectedDest: { endpointId: string; destId: string | null } | null = null;
 let pendingEndTaps: { tapIds: string[]; endpointName: string } | null = null;
+let pendingStarts: Array<{
+  key: string;
+  endpoint: string;
+  destination: string;
+  port: number;
+  path: string;
+}> = [];
+let expiryTimer: number | null = null;
+let connectPhase: Phase = "disconnected";
+let osOnline = true;
 
 function escapeHtml(value: string): string {
   return value
@@ -114,6 +136,10 @@ function escapeHtml(value: string): string {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function applyOffline() {
+  $("offline").classList.toggle("hidden", osOnline && navigator.onLine);
 }
 
 function showError(msg: string | null) {
@@ -165,11 +191,22 @@ function relayInstanceId(relay: string): string {
   return name.replace(/^relay-/i, "") || relay;
 }
 
+function connectionLive(phase: Phase): boolean {
+  return phase === "connected" || phase === "connecting" || phase === "reconnecting";
+}
+
 function applyStatus(s: ConnectStatus) {
+  connectPhase = s.phase;
   $("status-dot").className = `dot ${s.phase}`;
   $("status-phase").textContent = s.phase[0].toUpperCase() + s.phase.slice(1);
+  const live = connectionLive(s.phase);
+  $("conn-opt-connected").querySelector(".conn-check")?.classList.toggle("hidden", !live);
+  $("conn-opt-disconnected").querySelector(".conn-check")?.classList.toggle("hidden", live);
+  const btn = $("conn-btn") as HTMLButtonElement;
+  btn.disabled = s.phase === "revoked";
+  if (s.phase === "revoked") closeConnMenu();
   const relay = $("status-relay");
-  if (s.relay) {
+  if (s.relay && live) {
     relay.textContent = `Connected to ${relayInstanceId(s.relay)}`;
     relay.classList.remove("hidden");
     relay.title = s.relay;
@@ -179,6 +216,26 @@ function applyStatus(s: ConnectStatus) {
     relay.classList.add("hidden");
   }
   applyAgentName();
+}
+
+function closeConnMenu() {
+  $("conn-menu").classList.add("hidden");
+  $("conn-btn").setAttribute("aria-expanded", "false");
+}
+
+async function setConnection(want: "connected" | "disconnected") {
+  if (connectPhase === "revoked") return;
+  const live = connectionLive(connectPhase);
+  showError(null);
+  try {
+    if (want === "connected" && !live) {
+      await invoke("start_connect", { region: null });
+    } else if (want === "disconnected" && live) {
+      await invoke("stop_connect");
+    }
+  } catch (e) {
+    showError(invokeError(e));
+  }
 }
 
 function activeOrgId(): string {
@@ -196,14 +253,71 @@ function loadSaved(): SavedTap[] {
 
 function persistSaved(rows: SavedTap[]) {
   const all = JSON.parse(localStorage.getItem(SAVED_KEY) || "{}") as Record<string, SavedTap[]>;
-  all[activeOrgId()] = rows;
+  all[activeOrgId()] = pruneSaved(rows);
   localStorage.setItem(SAVED_KEY, JSON.stringify(all));
 }
 
+function pruneSaved(rows: SavedTap[]): SavedTap[] {
+  const distinct: SavedTap[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    distinct.push(row);
+  }
+  const recent = distinct.slice(0, RECENT_LIMIT);
+  const recentIds = new Set(recent.map((s) => s.id));
+  return [...recent, ...distinct.filter((s) => s.favorite && !recentIds.has(s.id))];
+}
+
 function upsertSaved(tap: SavedTap) {
-  const rows = loadSaved().filter((s) => s.id !== tap.id);
-  rows.unshift(tap);
-  persistSaved(rows);
+  const rows = loadSaved();
+  const prev = rows.find((s) => s.id === tap.id);
+  const next: SavedTap = {
+    ...prev,
+    ...tap,
+    favorite: tap.favorite ?? prev?.favorite ?? false,
+  };
+  persistSaved([next, ...rows.filter((s) => s.id !== tap.id)]);
+}
+
+function isFavorite(id: string): boolean {
+  return loadSaved().some((s) => s.id === id && s.favorite);
+}
+
+function setFavorite(id: string, on: boolean) {
+  const row = loadSaved().find((s) => s.id === id);
+  if (!row) return;
+  upsertSaved({ ...row, favorite: on });
+}
+
+function savedFromLive(t: TapInfo): SavedTap {
+  const { port, path } = tapPortPath(t.target);
+  const ep = catalog.endpoints.find((e) => e.name === t.endpoint || e.id === t.endpoint);
+  const dest = ep?.destinations.find((d) => d.name === t.destination);
+  const destId = dest?.id ?? null;
+  const endpointId = ep?.id ?? t.endpoint;
+  const destName =
+    t.destination && t.destination !== "(endpoint)" ? t.destination : "Raw incoming webhook";
+  return {
+    id: savedId(endpointId, destId, Number(port) || 0, path),
+    endpointId,
+    endpointName: ep?.name ?? t.endpoint,
+    destId,
+    destName,
+    port: Number(port) || 0,
+    path,
+    favorite: true,
+  };
+}
+
+function savedMatchingLive(t: TapInfo): SavedTap | undefined {
+  const mapped = savedFromLive(t);
+  return loadSaved().find((s) => s.id === mapped.id) ?? liveForSavedMatch(t);
+}
+
+function liveForSavedMatch(t: TapInfo): SavedTap | undefined {
+  return loadSaved().find((s) => liveForSaved(s)?.id === t.id);
 }
 
 function savedId(endpointId: string, destId: string | null, port: number, path: string): string {
@@ -218,10 +332,6 @@ function tapsForEndpoint(ep: EndpointInfo): TapInfo[] {
   return catalog.taps.filter((t) => t.endpoint === ep.name || t.endpoint === ep.id);
 }
 
-function tapCountFor(ep: EndpointInfo): number {
-  return tapsForEndpoint(ep).length;
-}
-
 function liveForSaved(saved: SavedTap): TapInfo | undefined {
   const target = `127.0.0.1:${saved.port}${saved.path}`;
   return catalog.taps.find(
@@ -231,38 +341,95 @@ function liveForSaved(saved: SavedTap): TapInfo | undefined {
   );
 }
 
-function tapPill(count: number): string {
-  if (count <= 0) return `<span class="muted">—</span>`;
-  return `<span class="tap-pill" title="${count} active tap${count === 1 ? "" : "s"}"><span class="tap-pill-icon">${TAP_ICON}</span><span class="tap-pill-count">${count}</span></span>`;
-}
-
 function emptyTray(message: string): string {
   return `<div class="table-empty">${escapeHtml(message)}</div>`;
 }
 
-function tableWrap(head: string, body: string): string {
-  return `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+function tableWrap(head: string, body: string, tableClass?: string): string {
+  const cls = tableClass ? ` class="${tableClass}"` : "";
+  return `<table${cls}><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+function tapPortPath(target: string): { port: string; path: string } {
+  const rest = target.replace(/^127\.0\.0\.1:/, "");
+  const slash = rest.indexOf("/");
+  if (slash < 0) return { port: rest || "—", path: "/" };
+  return { port: rest.slice(0, slash) || "—", path: rest.slice(slash) || "/" };
+}
+
+function formatRemaining(iso: string): string {
+  const end = Date.parse(iso);
+  if (Number.isNaN(end)) return iso;
+  const ms = end - Date.now();
+  if (ms <= 0) return "Expired";
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function tickExpiryCells() {
+  document.querySelectorAll<HTMLElement>("[data-expires]").forEach((el) => {
+    const iso = el.dataset.expires;
+    if (!iso) return;
+    el.textContent = formatRemaining(iso);
+  });
+}
+
+function ensureExpiryTicker() {
+  if (expiryTimer != null) return;
+  expiryTimer = window.setInterval(tickExpiryCells, 1000);
+}
+
+function tapsTableHead(last: string): string {
+  return `<th class="col-tap">Endpoint / Destination</th><th class="col-port">Port</th><th class="col-path">Path</th><th class="col-meta">${last}</th><th class="col-actions"></th>`;
+}
+
+function tapPairCell(endpoint: string, destination: string): string {
+  const dest = destination.trim() || "(endpoint)";
+  return `<div class="tap-pair">
+    <div class="tap-pair-line tap-pair-ep">
+      <span class="tap-pair-icon" aria-hidden="true">${ENDPOINT_ICON}</span>
+      <span class="tap-pair-text">${escapeHtml(endpoint)}</span>
+    </div>
+    <div class="tap-pair-line tap-pair-dest">
+      <span class="tap-pair-icon" aria-hidden="true">${DEST_ICON}</span>
+      <span class="tap-pair-text">${escapeHtml(dest)}</span>
+    </div>
+  </div>`;
+}
+
+function menuItem(label: string, attrs: string, extraClass = ""): string {
+  const cls = extraClass ? `row-menu-item ${extraClass}` : "row-menu-item";
+  return `<button type="button" class="${cls}" role="menuitem" ${attrs}>${label}</button>`;
 }
 
 function copyIdButton(id: string, label: string): string {
   return `<button type="button" class="copy-id" data-copy-id="${escapeHtml(id)}" title="${escapeHtml(id)}" aria-label="Copy ${escapeHtml(label.toLowerCase())}">ID ${COPY_ICON}</button>`;
 }
 
-function endpointPublicUrl(ep: Pick<EndpointInfo, "url" | "slug">): string {
-  const direct = ep.url?.trim();
-  if (direct) return direct;
-  const slug = ep.slug?.trim();
-  if (slug) return `https://hookdeploy.dev/a/${slug}`;
-  return "";
+function endpointPublicUrl(ep: Pick<EndpointInfo, "url">): string {
+  return ep.url?.trim() ?? "";
+}
+
+function endpointTitleCell(name: string, id: string): string {
+  return `<div class="cell-endpoint"><div class="cell-title-row"><div class="cell-title">${escapeHtml(name)}</div>${copyIdButton(id, "Endpoint ID")}</div></div>`;
+}
+
+function endpointUrlCell(url?: string | null): string {
+  const trimmed = url?.trim() ?? "";
+  if (!trimmed) return `<span class="muted">—</span>`;
+  return `<div class="cell-url">
+        <span class="cell-url-text mono" title="${escapeHtml(trimmed)}">${escapeHtml(trimmed)}</span>
+        <button type="button" class="copy-url" data-copy-url="${escapeHtml(trimmed)}" title="Copy URL" aria-label="Copy endpoint URL">${COPY_ICON}</button>
+      </div>`;
 }
 
 function endpointNameCell(name: string, id: string, url?: string | null): string {
-  const urlRow = url
-    ? `<div class="cell-url">
-        <span class="cell-url-text mono" title="${escapeHtml(url)}">${escapeHtml(url)}</span>
-        <button type="button" class="copy-url" data-copy-url="${escapeHtml(url)}" title="Copy URL" aria-label="Copy endpoint URL">${COPY_ICON}</button>
-      </div>`
-    : "";
+  const urlRow = url?.trim() ? endpointUrlCell(url) : "";
   return `<div class="cell-endpoint"><div class="cell-title-row"><div class="cell-title">${escapeHtml(name)}</div>${copyIdButton(id, "Endpoint ID")}</div>${urlRow}</div>`;
 }
 
@@ -346,19 +513,16 @@ function renderDashboard() {
   const inbound = catalog.endpoints.filter(forwardsHere);
   $("dash-ep-count").textContent = String(catalog.endpoints.length);
   $("dash-fwd-count").textContent = String(inbound.length);
-  $("dash-tap-count").textContent = String(catalog.taps.length);
+  $("dash-tap-count").textContent = String(catalog.taps.length + pendingStarts.length);
 
   $("dash-inbound").innerHTML = inbound.length
     ? tableWrap(
-        `<th>Endpoint</th><th>Destination</th><th>Taps</th>`,
+        `<th>Endpoint</th><th>URL</th>`,
         inbound
-          .map((ep) => {
-            const dests = ep.destinations
-              .filter((d) => d.kind === "agent")
-              .map((d) => escapeHtml(d.name))
-              .join(", ");
-            return `<tr><td><div class="cell-title">${escapeHtml(ep.name)}</div><div class="cell-sub mono">${escapeHtml(ep.id)}</div></td><td>${dests || "—"}</td><td>${tapPill(tapCountFor(ep))}</td></tr>`;
-          })
+          .map(
+            (ep) =>
+              `<tr><td>${endpointTitleCell(ep.name, ep.id)}</td><td>${endpointUrlCell(endpointPublicUrl(ep))}</td></tr>`,
+          )
           .join(""),
       )
     : emptyTray("No endpoints currently forward to this agent.");
@@ -472,72 +636,273 @@ async function confirmEndTap() {
   }
 }
 
+function closeRowMenus() {
+  document.querySelectorAll<HTMLElement>(".row-menu-pop").forEach((pop) => {
+    pop.classList.add("hidden");
+    pop.style.top = "";
+    pop.style.left = "";
+    pop.style.position = "";
+  });
+  document.querySelectorAll<HTMLButtonElement>(".row-menu-btn").forEach((btn) => {
+    btn.setAttribute("aria-expanded", "false");
+  });
+}
+
+function positionRowMenu(btn: HTMLElement, pop: HTMLElement) {
+  const rect = btn.getBoundingClientRect();
+  pop.classList.remove("hidden");
+  pop.style.position = "fixed";
+  pop.style.visibility = "hidden";
+  const width = pop.offsetWidth || 148;
+  const height = pop.offsetHeight || 40;
+  let left = rect.right - width;
+  if (left < 8) left = 8;
+  if (left + width > window.innerWidth - 8) left = window.innerWidth - width - 8;
+  let top = rect.bottom + 4;
+  if (top + height > window.innerHeight - 8) top = rect.top - height - 4;
+  pop.style.left = `${left}px`;
+  pop.style.top = `${Math.max(8, top)}px`;
+  pop.style.visibility = "";
+}
+
+function bindRowMenus() {
+  document.querySelectorAll<HTMLButtonElement>(".row-menu-btn").forEach((btn) => {
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const wrap = btn.closest(".row-menu");
+      const pop = wrap?.querySelector<HTMLElement>(".row-menu-pop");
+      if (!pop) return;
+      const open = pop.classList.contains("hidden");
+      closeRowMenus();
+      if (!open) return;
+      btn.setAttribute("aria-expanded", "true");
+      positionRowMenu(btn, pop);
+    });
+  });
+}
+
+function tapRowMenu(items: string): string {
+  return `<div class="row-menu">
+    <button type="button" class="row-menu-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Tap actions">${MORE_ICON}</button>
+    <div class="row-menu-pop hidden" role="menu">${items}</div>
+  </div>`;
+}
+
+function favoriteMenuItem(id: string, fav: boolean): string {
+  return fav
+    ? menuItem("Remove from favorites", `data-unfav="${escapeHtml(id)}"`)
+    : menuItem("Add to favorites", `data-fav="${escapeHtml(id)}"`);
+}
+
+function liveTapRow(t: TapInfo): string {
+  const { port, path } = tapPortPath(t.target);
+  const saved = savedMatchingLive(t);
+  const favId = saved?.id ?? savedFromLive(t).id;
+  const expires = t.expires
+    ? `<span class="cell-timer" data-expires="${escapeHtml(t.expires)}" title="${escapeHtml(t.expires)}">${escapeHtml(formatRemaining(t.expires))}</span>`
+    : "—";
+  const items = [
+    menuItem("Stop tap", `data-stop="${escapeHtml(t.id)}"`, "danger"),
+    favoriteMenuItem(favId, isFavorite(favId)),
+  ].join("");
+  return `<tr>
+    <td class="col-tap">${tapPairCell(t.endpoint, t.destination || "(endpoint)")}</td>
+    <td class="col-port mono">${escapeHtml(port)}</td>
+    <td class="col-path mono">${escapeHtml(path)}</td>
+    <td class="col-meta">${expires}</td>
+    <td class="col-actions">${tapRowMenu(items)}</td>
+  </tr>`;
+}
+
+function pendingTapRow(p: (typeof pendingStarts)[number]): string {
+  return `<tr class="tap-pending">
+    <td class="col-tap">${tapPairCell(p.endpoint, p.destination)}</td>
+    <td class="col-port mono">${escapeHtml(String(p.port))}</td>
+    <td class="col-path mono">${escapeHtml(p.path)}</td>
+    <td class="col-meta cell-sub">Starting…</td>
+    <td class="col-actions"></td>
+  </tr>`;
+}
+
 function liveTapsTable(): string {
-  if (!catalog.taps.length) {
+  const pending = pendingStarts.filter(
+    (p) =>
+      !catalog.taps.some((t) => {
+        const { port, path } = tapPortPath(t.target);
+        return (
+          port === String(p.port) &&
+          path === p.path &&
+          (t.endpoint === p.endpoint || t.endpoint === p.key)
+        );
+      }),
+  );
+  if (!catalog.taps.length && !pending.length) {
     return emptyTray("No live taps. A tap stays listed until it expires or is stopped.");
   }
   return tableWrap(
-    `<th>Endpoint</th><th>Destination</th><th>Target</th><th>Expires</th><th></th>`,
-    catalog.taps
-      .map(
-        (t) => `<tr>
-          <td class="cell-title">${escapeHtml(t.endpoint)}</td>
-          <td>${escapeHtml(t.destination || "(endpoint)")}</td>
-          <td class="mono">${escapeHtml(t.target)}</td>
-          <td class="cell-sub">${escapeHtml(t.expires ?? "—")}</td>
-          <td><button class="stop" type="button" data-stop="${escapeHtml(t.id)}">Stop</button></td>
-        </tr>`,
-      )
-      .join(""),
+    tapsTableHead("Expires"),
+    pending.map(pendingTapRow).concat(catalog.taps.map(liveTapRow)).join(""),
+    "taps-table",
   );
+}
+
+async function startLiveTap(opts: {
+  endpointId: string;
+  endpointName: string;
+  destId: string | null;
+  destName: string;
+  port: number;
+  path: string;
+  save: boolean;
+}): Promise<void> {
+  const path = opts.path.startsWith("/") ? opts.path : `/${opts.path}`;
+  const key = savedId(opts.endpointId, opts.destId, opts.port, path);
+  if (!pendingStarts.some((p) => p.key === key)) {
+    pendingStarts.push({
+      key,
+      endpoint: opts.endpointName,
+      destination: opts.destName,
+      port: opts.port,
+      path,
+    });
+  }
+  showError(null);
+  showPage("taps");
+  renderAll();
+  try {
+    const handle = await invoke<TapHandle>("create_tap", {
+      endpointId: opts.endpointId,
+      destinationId: opts.destId,
+      port: opts.port,
+      path,
+      noTty: true,
+    });
+    if (opts.save) {
+      upsertSaved({
+        id: key,
+        endpointId: opts.endpointId,
+        endpointName: opts.endpointName,
+        destId: opts.destId,
+        destName: opts.destName,
+        port: opts.port,
+        path,
+      });
+    }
+    if (!catalog.taps.some((t) => t.id === handle.id)) {
+      catalog.taps.unshift({
+        id: handle.id,
+        endpoint: opts.endpointName,
+        destination: opts.destName === "Raw incoming webhook" ? "" : opts.destName,
+        target: handle.target || `127.0.0.1:${opts.port}${path}`,
+        expires: null,
+      });
+    }
+    pendingStarts = pendingStarts.filter((p) => p.key !== key);
+    renderAll();
+    void refreshCatalog().catch((e) => showError(invokeError(e)));
+  } catch (e) {
+    pendingStarts = pendingStarts.filter((p) => p.key !== key);
+    showError(invokeError(e));
+    renderAll();
+  }
+}
+
+function shortcutStatus(s: SavedTap): string {
+  if (liveForSaved(s)) return `<span class="fwd-badge">Active</span>`;
+  if (pendingStarts.some((p) => p.key === s.id)) return `<span class="cell-sub">Starting…</span>`;
+  return `<span class="muted">Idle</span>`;
+}
+
+function shortcutRow(s: SavedTap, kind: "recent" | "favorite"): string {
+  const live = liveForSaved(s);
+  const starting = pendingStarts.some((p) => p.key === s.id);
+  const items: string[] = [];
+  if (live) items.push(menuItem("Stop tap", `data-stop="${escapeHtml(live.id)}"`, "danger"));
+  else {
+    items.push(
+      menuItem(
+        starting ? "Starting…" : "Start Tap",
+        `data-enable="${escapeHtml(s.id)}"${starting ? " disabled" : ""}`,
+      ),
+    );
+  }
+  items.push(favoriteMenuItem(s.id, !!s.favorite));
+  if (kind === "recent") {
+    items.push(menuItem("Remove", `data-forget="${escapeHtml(s.id)}"`));
+  }
+  return `<tr>
+    <td class="col-tap">${tapPairCell(s.endpointName, s.destName)}</td>
+    <td class="col-port mono">${escapeHtml(String(s.port))}</td>
+    <td class="col-path mono">${escapeHtml(s.path)}</td>
+    <td class="col-meta">${shortcutStatus(s)}</td>
+    <td class="col-actions">${tapRowMenu(items.join(""))}</td>
+  </tr>`;
+}
+
+function renderShortcutTable(
+  el: HTMLElement,
+  rows: SavedTap[],
+  kind: "recent" | "favorite",
+  empty: string,
+) {
+  el.innerHTML = rows.length
+    ? tableWrap(tapsTableHead("Status"), rows.map((s) => shortcutRow(s, kind)).join(""), "taps-table")
+    : emptyTray(empty);
 }
 
 function renderTapsPage() {
   $("taps-live").innerHTML = liveTapsTable();
   const saved = loadSaved();
-  $("taps-saved").innerHTML = saved.length
-    ? tableWrap(
-        `<th>Endpoint</th><th>Destination</th><th>Target</th><th>Status</th><th></th>`,
-        saved
-          .map((s) => {
-            const live = liveForSaved(s);
-            const target = `127.0.0.1:${s.port}${s.path}`;
-            const action = live
-              ? `<button class="stop" type="button" data-stop="${escapeHtml(live.id)}">Stop</button>`
-              : `<button type="button" data-enable="${escapeHtml(s.id)}">Re-enable</button>`;
-            return `<tr>
-              <td class="cell-title">${escapeHtml(s.endpointName)}</td>
-              <td>${escapeHtml(s.destName)}</td>
-              <td class="mono">${escapeHtml(target)}</td>
-              <td>${live ? `<span class="fwd-badge">Active</span>` : `<span class="muted">Saved</span>`}</td>
-              <td class="row-between">${action}<button class="ghost" type="button" data-forget="${escapeHtml(s.id)}">Remove</button></td>
-            </tr>`;
-          })
-          .join(""),
-      )
-    : emptyTray("No saved taps yet. Create a tap to keep its port and path as a shortcut.");
+  renderShortcutTable(
+    $("taps-favorites"),
+    saved.filter((s) => s.favorite),
+    "favorite",
+    "No favorites yet. Add one from an active or recent tap.",
+  );
+  renderShortcutTable(
+    $("taps-saved"),
+    saved.slice(0, RECENT_LIMIT),
+    "recent",
+    "No recent taps yet. Start a tap to keep its port and path here.",
+  );
 
   document.querySelectorAll<HTMLButtonElement>("[data-enable]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
+    btn.addEventListener("click", () => {
       const savedTap = loadSaved().find((s) => s.id === btn.dataset.enable);
       if (!savedTap) return;
-      try {
-        await invoke<TapHandle>("create_tap", {
-          endpointId: savedTap.endpointId,
-          destinationId: savedTap.destId,
-          port: savedTap.port,
-          path: savedTap.path,
-          noTty: true,
-        });
-        await refreshCatalog();
-      } catch (e) {
-        showError(String(e));
-      }
+      void startLiveTap({
+        endpointId: savedTap.endpointId,
+        endpointName: savedTap.endpointName,
+        destId: savedTap.destId,
+        destName: savedTap.destName,
+        port: savedTap.port,
+        path: savedTap.path,
+        save: true,
+      });
     });
   });
   document.querySelectorAll<HTMLButtonElement>("[data-forget]").forEach((btn) => {
     btn.addEventListener("click", () => {
       persistSaved(loadSaved().filter((s) => s.id !== btn.dataset.forget));
+      renderAll();
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-fav]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.dataset.fav;
+      if (!id) return;
+      const existing = loadSaved().find((s) => s.id === id);
+      if (existing) setFavorite(id, true);
+      else {
+        const live = catalog.taps.find((t) => savedFromLive(t).id === id);
+        if (live) upsertSaved(savedFromLive(live));
+      }
+      renderAll();
+    });
+  });
+  document.querySelectorAll<HTMLButtonElement>("[data-unfav]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.dataset.unfav) setFavorite(btn.dataset.unfav, false);
       renderAll();
     });
   });
@@ -565,6 +930,7 @@ function renderAll() {
   renderEndpointsPage();
   renderTapsPage();
   bindLiveTapActions();
+  bindRowMenus();
 }
 
 type SelectOption = { value: string; label: string };
@@ -1065,7 +1431,58 @@ function applyEnrollPhase(phase: Snapshot["enroll_phase"]) {
   }
 }
 
+let pendingUpdate: Update | null = null;
+
+function setUpdateStatus(text: string) {
+  const el = document.getElementById("update-status");
+  if (el) el.textContent = text;
+}
+
+async function checkForUpdates(interactive: boolean) {
+  const btn = document.getElementById("check-updates") as HTMLButtonElement | null;
+  const foot = document.getElementById("update-foot");
+  if (btn) btn.disabled = true;
+  if (interactive) setUpdateStatus("Checking…");
+  try {
+    const update = await check();
+    pendingUpdate = update;
+    if (!update) {
+      if (foot) foot.classList.add("hidden");
+      setUpdateStatus("You’re up to date.");
+      return;
+    }
+    if (foot) foot.classList.remove("hidden");
+    setUpdateStatus(`Version ${update.version} is available.`);
+  } catch (e) {
+    pendingUpdate = null;
+    if (foot) foot.classList.add("hidden");
+    if (interactive) setUpdateStatus(invokeError(e));
+    else setUpdateStatus("Could not check for updates.");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function installPendingUpdate() {
+  if (!pendingUpdate) return;
+  const btn = document.getElementById("install-update") as HTMLButtonElement | null;
+  if (btn) btn.disabled = true;
+  setUpdateStatus("Downloading update…");
+  try {
+    await pendingUpdate.downloadAndInstall();
+    setUpdateStatus("Restarting…");
+    await relaunch();
+  } catch (e) {
+    setUpdateStatus(invokeError(e));
+    if (btn) btn.disabled = false;
+  }
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
+  applyOffline();
+  window.addEventListener("online", applyOffline);
+  window.addEventListener("offline", applyOffline);
+
   endpointSelect = new HdSelect($("tap-endpoint"));
   destSelect = new HdSelect($("tap-dest"));
   hdSelects.push(endpointSelect, destSelect);
@@ -1073,6 +1490,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   destSelect.onChange = () => applyDestSelection();
 
   applyAgentName();
+  ensureExpiryTicker();
   renderAll();
 
   document.querySelectorAll<HTMLButtonElement>(".nav-item").forEach((btn) => {
@@ -1081,12 +1499,35 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   $("org-btn").addEventListener("click", (ev) => {
     ev.stopPropagation();
+    closeConnMenu();
     $("org-menu").classList.toggle("hidden");
   });
+  $("conn-btn").addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    if (connectPhase === "revoked") return;
+    $("org-menu").classList.add("hidden");
+    const menu = $("conn-menu");
+    const open = menu.classList.toggle("hidden") === false;
+    $("conn-btn").setAttribute("aria-expanded", open ? "true" : "false");
+  });
+  $("conn-menu").querySelectorAll<HTMLButtonElement>("[data-conn]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      closeConnMenu();
+      const want = btn.dataset.conn;
+      if (want === "connected" || want === "disconnected") {
+        void setConnection(want);
+      }
+    });
+  });
   document.addEventListener("click", (ev) => {
-    const switcher = document.querySelector(".org-switcher");
-    if (switcher && !switcher.contains(ev.target as Node)) {
+    const target = ev.target as Node;
+    const org = document.querySelector(".org-switcher");
+    if (org && !org.contains(target)) {
       $("org-menu").classList.add("hidden");
+    }
+    const conn = document.querySelector(".conn-switcher");
+    if (conn && !conn.contains(target)) {
+      closeConnMenu();
     }
   });
 
@@ -1112,11 +1553,20 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.addEventListener("click", (ev) => {
     const target = ev.target as HTMLElement | null;
     if (!target?.closest(".hd-select")) closeHdSelects();
+    if (!target?.closest(".row-menu")) closeRowMenus();
   });
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") closeHdSelects();
+    if (ev.key === "Escape") {
+      closeHdSelects();
+      closeRowMenus();
+      closeConnMenu();
+      $("org-menu").classList.add("hidden");
+    }
   });
-  window.addEventListener("resize", () => closeHdSelects());
+  window.addEventListener("resize", () => {
+    closeHdSelects();
+    closeRowMenus();
+  });
   $("refresh-ports").addEventListener("click", () => {
     void refreshPorts().catch((e) => showError(String(e)));
   });
@@ -1129,35 +1579,23 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   $("tap-port").addEventListener("input", updateTapTarget);
   $("tap-path").addEventListener("input", updateTapTarget);
-  $("start-tap").addEventListener("click", async () => {
+  $("start-tap").addEventListener("click", () => {
     if (!selectedDest) return;
     const port = Number(($("tap-port") as HTMLInputElement).value);
     const path = ($("tap-path") as HTMLInputElement).value || "/";
+    if (!port) return;
     const ep = catalog.endpoints.find((e) => e.id === selectedDest?.endpointId);
     const dest = ep?.destinations.find((d) => d.id === selectedDest?.destId);
-    try {
-      await invoke<TapHandle>("create_tap", {
-        endpointId: selectedDest.endpointId,
-        destinationId: selectedDest.destId,
-        port,
-        path,
-        noTty: true,
-      });
-      upsertSaved({
-        id: savedId(selectedDest.endpointId, selectedDest.destId, port, path),
-        endpointId: selectedDest.endpointId,
-        endpointName: ep?.name ?? selectedDest.endpointId,
-        destId: selectedDest.destId,
-        destName: dest?.name ?? "Raw incoming webhook",
-        port,
-        path,
-      });
-      setDialogOpen(false);
-      showPage("taps");
-      await refreshCatalog();
-    } catch (e) {
-      showError(String(e));
-    }
+    setDialogOpen(false);
+    void startLiveTap({
+      endpointId: selectedDest.endpointId,
+      endpointName: ep?.name ?? selectedDest.endpointId,
+      destId: selectedDest.destId,
+      destName: dest?.name ?? "Raw incoming webhook",
+      port,
+      path,
+      save: true,
+    });
   });
 
   $("rename-agent").addEventListener("click", () => {
@@ -1187,6 +1625,20 @@ window.addEventListener("DOMContentLoaded", async () => {
       btn.disabled = false;
     }
   });
+  const versionEl = document.getElementById("settings-version");
+  if (versionEl) {
+    try {
+      versionEl.textContent = await getVersion();
+    } catch {
+      versionEl.textContent = "—";
+    }
+  }
+  $("check-updates").addEventListener("click", () => {
+    void checkForUpdates(true);
+  });
+  $("install-update").addEventListener("click", () => {
+    void installPendingUpdate();
+  });
   $("settings-add-org").addEventListener("click", () => {
     void startLogin();
   });
@@ -1211,6 +1663,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
   });
 
+  await listen<boolean>("network-online", (e) => {
+    osOnline = e.payload;
+    applyOffline();
+  });
   await listen<ConnectStatus>("connect-status", (e) => applyStatus(e.payload));
   await listen<Snapshot["enroll_phase"]>("enroll-progress", (e) => applyEnrollPhase(e.payload));
 
@@ -1219,6 +1675,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     const snap = await invoke<Snapshot>("get_snapshot");
     hostname = snap.agent_name;
     applyStatus(snap.status);
+    if (typeof snap.online === "boolean") {
+      osOnline = snap.online;
+      applyOffline();
+    }
     pendingEnroll = snap.enroll_phase;
   } catch {
     applyAgentName();
@@ -1245,4 +1705,5 @@ window.addEventListener("DOMContentLoaded", async () => {
       showError(invokeError(e));
     }
   }
+  void checkForUpdates(false);
 });

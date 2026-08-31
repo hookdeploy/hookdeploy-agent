@@ -2,7 +2,9 @@ use std::sync::Mutex;
 
 use tauri::image::Image;
 use tauri::menu::{MenuBuilder, MenuItem};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{TrayIconBuilder, TrayIconEvent};
+#[cfg(not(target_os = "macos"))]
+use tauri::tray::{MouseButton, MouseButtonState};
 use tauri::{AppHandle, Manager, Wry};
 
 use crate::parse::{ConnectPhase, ConnectStatus};
@@ -17,7 +19,17 @@ struct TrayUi {
 static TRAY: Mutex<Option<TrayUi>> = Mutex::new(None);
 
 fn tray_png() -> Image<'static> {
-    Image::from_bytes(include_bytes!("../icons/32x32.png")).expect("tray png")
+    // macOS menu bar wants a template (alpha mask). tray-template.png is a
+    // PLACEHOLDER grayscale conversion of the brand mark — swap for a real
+    // 22pt template asset before shipping.
+    #[cfg(target_os = "macos")]
+    {
+        Image::from_bytes(include_bytes!("../icons/tray-template.png")).expect("tray template png")
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Image::from_bytes(include_bytes!("../icons/32x32.png")).expect("tray png")
+    }
 }
 
 pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
@@ -37,10 +49,9 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let icon = tray_png();
-    TrayIconBuilder::with_id("main")
+    let builder = TrayIconBuilder::with_id("main")
         .icon(icon)
         .menu(&menu)
-        .show_menu_on_left_click(false)
         .tooltip("HookDeploy Agent")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main(app),
@@ -57,6 +68,9 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
+            // Windows: left-click opens the window; menu is the other button.
+            // macOS: left-click shows the menu (show_menu_on_left_click).
+            #[cfg(not(target_os = "macos"))]
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
@@ -65,8 +79,21 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             {
                 show_main(tray.app_handle());
             }
-        })
-        .build(app)?;
+            #[cfg(target_os = "macos")]
+            {
+                let _ = (tray, event);
+            }
+        });
+
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .icon_as_template(true)
+        .show_menu_on_left_click(true);
+
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.show_menu_on_left_click(false);
+
+    builder.build(app)?;
 
     *TRAY.lock().expect("tray") = Some(TrayUi {
         status,

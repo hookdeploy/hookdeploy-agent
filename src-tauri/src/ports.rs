@@ -58,6 +58,17 @@ const PROCESS_DENYLIST: &[&str] = &[
     "mssense",
     "csfalconservice",
     "sentinelagent",
+    // macOS system / menu-bar noise. Starting set from the macOS port audit
+    // (rapportd, ControlCenter, sharingd). PLACEHOLDER: tune after a live
+    // `listeners::get_all()` run on a real Mac, same as the Windows list.
+    "rapportd",
+    "controlcenter",
+    "sharingd",
+    "wifiagent",
+    "mdnsresponder",
+    "coreaudiod",
+    "identityservicesd",
+    "usernotificationcenter",
 ];
 
 /// Snapshot of TCP LISTEN sockets that look like a local high-port dev server.

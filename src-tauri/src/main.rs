@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    hookdeploy_tray_lib::run()
+    hookdeploy_agent_lib::run()
 }

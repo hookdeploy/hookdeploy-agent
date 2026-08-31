@@ -1,0 +1,159 @@
+# Build and publish HookDeploy Agent for Windows x64, macOS Apple Silicon, and macOS Intel.
+# Do not cut a tag until signing secrets exist on both platforms. This workflow is not triggered here.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            platform: windows-latest
+            rust_targets: ""
+            args: ""
+            sidecar_goos: windows
+            sidecar_goarch: amd64
+            sidecar_out: hookdeployed-x86_64-pc-windows-msvc.exe
+          # macos-latest is Apple Silicon; Intel is cross-compiled from the same runner
+          # (Tauri's documented GitHub matrix, not a second physical Intel Mac).
+          - name: macos-arm64
+            platform: macos-latest
+            rust_targets: aarch64-apple-darwin
+            args: "--target aarch64-apple-darwin"
+            sidecar_goos: darwin
+            sidecar_goarch: arm64
+            sidecar_out: hookdeployed-aarch64-apple-darwin
+          - name: macos-x64
+            platform: macos-latest
+            rust_targets: x86_64-apple-darwin
+            args: "--target x86_64-apple-darwin"
+            sidecar_goos: darwin
+            sidecar_goarch: amd64
+            sidecar_out: hookdeployed-x86_64-apple-darwin
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: hookdeploy/hookdeployed
+          path: hookdeployed-src
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: hookdeployed-src/go.mod
+
+      - name: Build hookdeployed sidecar
+        working-directory: hookdeployed-src
+        shell: bash
+        run: |
+          mkdir -p ../src-tauri/binaries
+          CGO_ENABLED=0 GOOS=${{ matrix.sidecar_goos }} GOARCH=${{ matrix.sidecar_goarch }} \
+            go build -trimpath -ldflags="-s -w" \
+            -o "../src-tauri/binaries/${{ matrix.sidecar_out }}" ./cmd/agent
+          chmod +x "../src-tauri/binaries/${{ matrix.sidecar_out }}" || true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - run: npm ci
+
+      - name: Import Apple Developer ID certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          security find-identity -v -p codesigning build.keychain
+          CERT_ID=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
+          echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+          echo "${{ secrets.APPLE_API_KEY_P8 }}" > AuthKey.p8
+          echo "APPLE_API_KEY_PATH=${PWD}/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Install Azure Trusted Signing CLI
+        if: runner.os == 'Windows'
+        run: cargo install artifact-signing-cli --locked
+
+      - name: Write Windows signCommand overlay
+        if: runner.os == 'Windows'
+        env:
+          ATS_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          ATS_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          ATS_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+        shell: pwsh
+        run: |
+          $cmd = "artifact-signing-cli -e $env:ATS_ENDPOINT -a $env:ATS_ACCOUNT -c $env:ATS_PROFILE -d `"HookDeploy Agent`" %1"
+          $json = @{ bundle = @{ windows = @{ signCommand = $cmd } } } | ConvertTo-Json -Depth 6
+          Set-Content -Path src-tauri/windows-sign.ci.json -Value $json -Encoding utf8
+
+      - uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: HookDeploy Agent ${{ github.ref_name }}
+          releaseBody: See the assets to download this version.
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: false
+          args: ${{ matrix.name == 'windows' && '--config src-tauri/windows-sign.ci.json' || matrix.args }}
+
+  latest-json:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Assemble latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          VERSION: ${{ github.ref_name }}
+        run: node scripts/assemble-latest-json.mjs
+      - name: Upload latest.json to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" latest.json --clobber

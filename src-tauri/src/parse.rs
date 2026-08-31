@@ -228,18 +228,14 @@ struct TapJson {
     expires_at: String,
 }
 
-/// Production tap-targets does not yet return `url`. The public ingest
-/// path is deterministic from slug (`https://hookdeploy.dev/a/{slug}`).
-fn resolve_endpoint_url(url: &str, slug: &str) -> Option<String> {
+/// Use the worker's region-aware ingest URL (`/a/`, `/e/`, `/p/`, `/o/`).
+/// Do not invent a path from slug — the letter is not always `a`.
+fn resolve_endpoint_url(url: &str) -> Option<String> {
     let url = url.trim();
-    if !url.is_empty() {
-        return Some(url.to_string());
-    }
-    let slug = slug.trim();
-    if slug.is_empty() {
+    if url.is_empty() {
         return None;
     }
-    Some(format!("https://hookdeploy.dev/a/{slug}"))
+    Some(url.to_string())
 }
 
 fn parse_tap_list_json(raw: &str) -> Result<Catalog, String> {
@@ -265,7 +261,7 @@ fn parse_tap_list_json(raw: &str) -> Result<Catalog, String> {
                 } else {
                     Some(slug.to_string())
                 },
-                url: resolve_endpoint_url(&ep.url, slug),
+                url: resolve_endpoint_url(&ep.url),
                 destinations: ep
                     .destinations
                     .iter()
@@ -547,6 +543,60 @@ pub fn is_code_prompt(line: &str) -> bool {
     strip_agent_prefix(line).contains("Enter the code from the browser:")
 }
 
+const ENROLL_FAIL_GENERIC: &str = "Enrollment failed. Check your connection and try again.";
+const ENROLL_FAIL_MAX: usize = 160;
+
+fn enroll_line_looks_leaky(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.contains("stored cert")
+        || lower.contains("cn=")
+        || lower.contains("ou=")
+        || lower.contains("token")
+        || lower.contains("-----")
+        || lower.contains("begin ")
+        || lower.contains("client.key")
+        || lower.contains("renewal")
+        || line.contains(":\\")
+        || lower.contains("/home/")
+        || lower.contains("/users/")
+        || lower.contains("/appdata/")
+}
+
+/// Last allowlisted enroll-failure line, or a fixed generic message.
+/// Never returns the raw stdout/stderr buffer.
+pub fn summarize_enroll_failure(buf: &str, _exit_code: i32) -> String {
+    for raw in buf.lines().rev() {
+        let line = strip_agent_prefix(raw);
+        if line.is_empty() || is_code_prompt(line) || enroll_line_looks_leaky(line) {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        let allowlisted = lower.contains("wrong code")
+            || lower.contains("timed out")
+            || lower.contains("timeout")
+            || lower.contains("connection refused")
+            || lower.contains("failed to connect")
+            || lower.contains("could not")
+            || lower.contains("unable to")
+            || lower.contains("unreachable")
+            || lower.contains("unauthorized")
+            || lower.contains("forbidden")
+            || lower.contains("not enrolled")
+            || lower.contains("invalid")
+            || lower.starts_with("error:");
+        if !allowlisted {
+            continue;
+        }
+        if line.len() <= ENROLL_FAIL_MAX {
+            return line.to_string();
+        }
+        let mut truncated: String = line.chars().take(ENROLL_FAIL_MAX).collect();
+        truncated.push('…');
+        return truncated;
+    }
+    ENROLL_FAIL_GENERIC.to_string()
+}
+
 /// Match a just-created tap in `tap list` by endpoint id or name + target.
 pub fn resolve_created_tap_id(catalog: &Catalog, created: &CreatedTap) -> Option<String> {
     catalog
@@ -651,14 +701,23 @@ tap-live
     }
 
     #[test]
-    fn tap_list_json_builds_url_from_slug_when_url_empty() {
+    fn tap_list_json_omits_url_when_worker_did_not_send_one() {
         let cat = parse_tap_list(
             r#"{"endpoints":[{"id":"ep-1","slug":"orders","name":"Orders","url":"","destinations":[]}],"taps":[]}"#,
         )
         .unwrap();
+        assert_eq!(cat.endpoints[0].url, None);
+    }
+
+    #[test]
+    fn tap_list_json_keeps_region_path_from_worker() {
+        let cat = parse_tap_list(
+            r#"{"endpoints":[{"id":"ep-1","slug":"orders","name":"Orders","url":"https://hookdeploy.dev/e/orders","destinations":[]}],"taps":[]}"#,
+        )
+        .unwrap();
         assert_eq!(
             cat.endpoints[0].url.as_deref(),
-            Some("https://hookdeploy.dev/a/orders")
+            Some("https://hookdeploy.dev/e/orders")
         );
     }
 
@@ -712,6 +771,28 @@ tap-live
         assert_eq!(
             parse_agent_cn("agent: stored cert in C:\\x org=Acme CN=agent-1 OU=org-1").unwrap(),
             "agent-1"
+        );
+    }
+
+    #[test]
+    fn enroll_failure_drops_raw_buffer_and_leaks() {
+        assert_eq!(
+            summarize_enroll_failure(
+                "agent: stored cert in C:\\x org=Acme CN=agent-1 OU=org-1\nEnter the code from the browser:\n",
+                1,
+            ),
+            ENROLL_FAIL_GENERIC
+        );
+        assert_eq!(
+            summarize_enroll_failure(
+                "agent: stored cert in C:\\x\ncould not reach enroll server\n",
+                1,
+            ),
+            "could not reach enroll server"
+        );
+        assert_eq!(
+            summarize_enroll_failure("wrong code — try again\n", 1),
+            "wrong code — try again"
         );
     }
 }

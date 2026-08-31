@@ -8,11 +8,27 @@
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>
+    <div id="offline" class="offline hidden" role="status" aria-live="polite">
+      <div class="gate-card">
+        <img
+          class="gate-logo"
+          src="/src/assets/icon.png"
+          alt="HookDeploy"
+          width="40"
+          height="40"
+        />
+        <h1>No Internet Connection</h1>
+        <p class="enroll-copy">
+          Please connect to the internet to start receiving webhooks.
+        </p>
+      </div>
+    </div>
+
     <div id="gate" class="gate">
       <div class="gate-card">
         <img
           class="gate-logo"
-          src="https://static.hookdeploy.dev/icon.png"
+          src="/src/assets/icon.png"
           alt="HookDeploy"
           width="40"
           height="40"
@@ -41,7 +57,7 @@
         <div class="sidebar-brand">
           <img
             class="brand-icon"
-            src="https://static.hookdeploy.dev/icon.png"
+            src="/src/assets/icon.png"
             alt="HookDeploy"
             width="28"
             height="28"
@@ -79,9 +95,26 @@
         </nav>
 
         <div class="sidebar-status">
-          <div class="status-line">
-            <span id="status-dot" class="dot disconnected" aria-hidden="true"></span>
-            <span id="status-phase">Disconnected</span>
+          <div class="conn-switcher">
+            <button id="conn-btn" class="conn-btn" type="button" aria-haspopup="menu" aria-expanded="false" title="Change connection">
+              <span class="status-line">
+                <span id="status-dot" class="dot disconnected" aria-hidden="true"></span>
+                <span id="status-phase">Disconnected</span>
+              </span>
+              <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M7 15l5 5 5-5M7 9l5-5 5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+            <div id="conn-menu" class="org-menu conn-menu hidden" role="menu">
+              <button type="button" id="conn-opt-connected" data-conn="connected" role="menuitem">
+                <span>Connected</span>
+                <svg class="conn-check hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+              <button type="button" id="conn-opt-disconnected" data-conn="disconnected" role="menuitem">
+                <span>Disconnected</span>
+                <svg class="conn-check hidden" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 6L9 17l-5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              </button>
+            </div>
           </div>
           <div class="agent-name-row">
             <div id="agent-name" class="agent-name">—</div>
@@ -151,8 +184,11 @@
             </div>
             <h2>Active</h2>
             <div id="taps-live" class="table-tray"></div>
-            <h2>Saved</h2>
-            <p class="muted saved-hint">Re-enable a saved tap to reuse its endpoint, destination, port, and path.</p>
+            <h2>Favorites</h2>
+            <p class="muted saved-hint">Pinned shortcuts. Favorite a tap from Active or Recent to keep it here.</p>
+            <div id="taps-favorites" class="table-tray"></div>
+            <h2>Recent</h2>
+            <p class="muted saved-hint">The last 5 distinct taps. Start Tap to reuse its endpoint, destination, port, and path.</p>
             <div id="taps-saved" class="table-tray"></div>
           </section>
 
@@ -214,6 +250,25 @@
                     </div>
                     <div class="panel-foot">
                       <button id="settings-add-org" type="button">Add organization</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section>
+                <h2>Updates</h2>
+                <p class="settings-lead">Current version <span id="settings-version" class="mono">—</span></p>
+                <div class="panel-tray">
+                  <div class="panel-inner">
+                    <div class="panel-body settings-danger-row">
+                      <div class="min-w-0">
+                        <p class="settings-org-name">HookDeploy Agent</p>
+                        <p id="update-status" class="settings-hint">Not checked yet.</p>
+                      </div>
+                      <button id="check-updates" type="button">Check for updates</button>
+                    </div>
+                    <div id="update-foot" class="panel-foot hidden">
+                      <button id="install-update" type="button">Install and restart</button>
                     </div>
                   </div>
                 </div>
@@ -302,7 +357,23 @@
               </div>
             </div>
             <div class="field">
-              <span id="tap-dest-label">Destination</span>
+              <div class="field-label">
+                <span id="tap-dest-label">Destination</span>
+                <span class="info-tip">
+                  <button type="button" class="info-tip-btn" aria-describedby="tap-dest-tip" aria-label="About destinations">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/>
+                      <circle cx="12" cy="8" r="1.15" fill="currentColor"/>
+                      <path d="M12 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                  </button>
+                  <span id="tap-dest-tip" class="info-tip-pop" role="tooltip">
+                    The destination traffic you want to tap.
+                    <strong>Raw incoming webhook</strong>
+                    is the raw payload before any transformation and downstream destinations match the transformation rules applied to payloads sent to that destination. Tapping does not interrupt traffic to destinations.
+                  </span>
+                </span>
+              </div>
               <div class="hd-select" id="tap-dest" data-placeholder="Select destination">
                 <button
                   type="button"
@@ -320,14 +391,42 @@
               </div>
             </div>
             <div class="fields">
-              <label class="field" for="tap-port">
-                <span>Port</span>
+              <div class="field">
+                <div class="field-label">
+                  <label for="tap-port">Port</label>
+                  <span class="info-tip">
+                    <button type="button" class="info-tip-btn" aria-describedby="tap-port-tip" aria-label="About port">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/>
+                        <circle cx="12" cy="8" r="1.15" fill="currentColor"/>
+                        <path d="M12 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                      </svg>
+                    </button>
+                    <span id="tap-port-tip" class="info-tip-pop" role="tooltip">
+                      The port of the service listening on this machine. Webhooks are served to the specified port on 127.0.0.1.
+                    </span>
+                  </span>
+                </div>
                 <input id="tap-port" class="mono" type="number" min="1" max="65535" />
-              </label>
-              <label class="field" for="tap-path">
-                <span>Path</span>
+              </div>
+              <div class="field">
+                <div class="field-label">
+                  <label for="tap-path">Path</label>
+                  <span class="info-tip">
+                    <button type="button" class="info-tip-btn" aria-describedby="tap-path-tip" aria-label="About path">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2"/>
+                        <circle cx="12" cy="8" r="1.15" fill="currentColor"/>
+                        <path d="M12 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                      </svg>
+                    </button>
+                    <span id="tap-path-tip" class="info-tip-pop" role="tooltip">
+                      The path for the service listening on this machine.
+                    </span>
+                  </span>
+                </div>
                 <input id="tap-path" class="mono" value="/hooks" />
-              </label>
+              </div>
             </div>
           </div>
           <div class="dialog-col dialog-col-ports">

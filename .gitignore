@@ -13,6 +13,10 @@ dist-ssr
 target/
 src-tauri/binaries/*.exe
 *.local
+src-tauri/windows-sign.ci.json
+AuthKey.p8
+certificate.p12
+latest.json
 
 # Editor directories and files
 .vscode/*
