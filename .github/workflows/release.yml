@@ -151,7 +151,7 @@ jobs:
           releaseBody: See the assets to download this version.
           releaseDraft: true
           prerelease: false
-          includeUpdaterJson: false
+          uploadUpdaterJson: false
           args: ${{ matrix.name == 'windows' && '--config src-tauri/windows-sign.ci.json' || matrix.args }}
 
   latest-json:
