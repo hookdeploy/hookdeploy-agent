@@ -79,36 +79,6 @@ jobs:
 
       - run: npm ci
 
-      - name: Debug cert integrity
-        if: runner.os == 'macOS'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
-          echo "Decoded file size:"
-          ls -la certificate.p12
-          echo "Decoded file SHA256:"
-          shasum -a 256 certificate.p12
-          echo "Raw secret length (should be 4528):"
-          echo -n "$APPLE_CERTIFICATE" | wc -c
-          echo "First 20 chars of secret (safe -- base64 has no sensitive structure at this length):"
-          echo -n "$APPLE_CERTIFICATE" | head -c 20
-          echo ""
-          echo "Last 20 chars of secret:"
-          echo -n "$APPLE_CERTIFICATE" | tail -c 20
-          echo ""
-          file certificate.p12
-          echo "Password length:"
-          echo -n "$APPLE_CERTIFICATE_PASSWORD" | wc -c
-          python3 -c "import os; v=os.environ.get('APPLE_CERTIFICATE_PASSWORD',''); print('password_py_len', len(v)); print('trailing_cr', v.endswith(chr(13))); print('trailing_lf', v.endswith(chr(10))); print('leading_or_trailing_space', v!=v.strip())"
-          echo "openssl pkcs12 -noout on runner:"
-          if openssl pkcs12 -in certificate.p12 -noout -passin env:APPLE_CERTIFICATE_PASSWORD; then
-            echo "openssl: MAC OK"
-          else
-            echo "openssl: MAC FAIL exit=$?"
-          fi
-
       - name: Import Apple Developer ID certificate
         if: runner.os == 'macOS'
         env:
@@ -116,12 +86,28 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
+          # OpenSSL 3 (and Windows openssl) writes PKCS#12 with PBES2/SHA-256 MAC.
+          # openssl on the runner accepts that file+password; SecKeychainItemImport
+          # does not and reports "MAC verification failed (wrong password?)".
+          # Re-export with SHA1+3DES before import.
           echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          umask 077
+          PEM="$RUNNER_TEMP/identity.pem"
+          LEGACY="$RUNNER_TEMP/certificate-legacy.p12"
+          openssl pkcs12 -in certificate.p12 -nodes -passin env:APPLE_CERTIFICATE_PASSWORD -out "$PEM"
+          if openssl pkcs12 -export -help 2>&1 | grep -q -- '-legacy'; then
+            openssl pkcs12 -export -legacy -in "$PEM" -out "$LEGACY" -passout env:APPLE_CERTIFICATE_PASSWORD
+          else
+            openssl pkcs12 -export -in "$PEM" -out "$LEGACY" -passout env:APPLE_CERTIFICATE_PASSWORD \
+              -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1
+          fi
+          rm -f "$PEM" certificate.p12
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security set-keychain-settings -t 3600 -u build.keychain
-          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security import "$LEGACY" -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$LEGACY"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
           security find-identity -v -p codesigning build.keychain
           CERT_ID=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application" | head -1 | awk -F'"' '{print $2}')
