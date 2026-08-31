@@ -1,4 +1,52 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap");
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/inter-latin-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./assets/fonts/inter-latin-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./assets/fonts/inter-latin-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./assets/fonts/inter-latin-700.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono-latin-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono-latin-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono-latin-600.woff2") format("woff2");
+}
 
 :root {
   --radius: 4px;
@@ -14,7 +62,6 @@
   --text-muted: #949494;
   --text-disabled: #525252;
   --accent: #f97316;
-  --accent-hover: #fb923c;
   --accent-pressed: #ea580c;
   --accent-subtle: #f973161a;
   --accent-border: #f9731633;
@@ -44,6 +91,24 @@ body {
 #app {
   display: flex;
   height: 100%;
+}
+
+.offline {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-base);
+}
+
+.offline .gate-card h1 {
+  margin-bottom: 8px;
+}
+
+.offline .enroll-copy {
+  margin: 0;
 }
 
 .gate {
@@ -219,7 +284,12 @@ body {
 }
 
 .org-menu button:hover {
-  background: var(--bg-overlay);
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.org-menu button:hover .org-id {
+  color: var(--accent-foreground);
 }
 
 .org-menu .org-id {
@@ -274,8 +344,14 @@ body {
 }
 
 .nav-item:hover {
-  background: var(--bg-elevated);
-  color: var(--text-primary);
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.nav-item:hover svg,
+.nav-item.active:hover svg {
+  color: var(--accent-foreground);
+  opacity: 1;
 }
 
 .nav-item.active {
@@ -336,10 +412,58 @@ body {
   border-top: 1px solid var(--border-subtle);
 }
 
+.conn-switcher {
+  position: relative;
+}
+
+.conn-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: auto;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.conn-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.conn-btn[aria-expanded="true"] {
+  background: var(--bg-elevated);
+}
+
+.conn-btn .chevron {
+  color: var(--text-disabled);
+  flex-shrink: 0;
+}
+
+.conn-btn:hover:not(:disabled) .chevron,
+.conn-btn[aria-expanded="true"] .chevron {
+  color: inherit;
+}
+
+.conn-menu {
+  top: auto;
+  bottom: calc(100% + 4px);
+  width: 100%;
+}
+
 .status-line {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
   font-size: 13px;
   font-weight: 600;
 }
@@ -451,6 +575,8 @@ button.agent-rename:hover:not(:disabled) {
 }
 
 .table-tray {
+  min-width: 0;
+  overflow-x: auto;
   border: 1px solid var(--border-subtle);
   background: var(--bg-elevated);
   border-radius: 12px;
@@ -463,6 +589,158 @@ button.agent-rename:hover:not(:disabled) {
   background: var(--bg-surface);
   border-radius: 8px;
   overflow: hidden;
+}
+
+.table-tray table.taps-table {
+  table-layout: fixed;
+}
+
+.taps-table .col-tap {
+  width: 34%;
+}
+
+.taps-table .col-port {
+  width: 4.5rem;
+}
+
+.taps-table .col-path {
+  width: 28%;
+}
+
+.taps-table .col-meta {
+  width: 5.5rem;
+  white-space: nowrap;
+}
+
+.taps-table .col-actions {
+  width: 3.25rem;
+  padding-right: 28px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.taps-table th.col-actions,
+.taps-table td.col-actions {
+  padding-right: 28px;
+}
+
+.row-menu {
+  display: inline-flex;
+  justify-content: flex-end;
+}
+
+button.row-menu-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+button.row-menu-btn:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+button.row-menu-btn[aria-expanded="true"] {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+.row-menu-pop {
+  z-index: 40;
+  min-width: 148px;
+  padding: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px #00000080;
+}
+
+button.row-menu-item {
+  display: block;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+button.row-menu-item:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+button.row-menu-item.danger {
+  color: var(--danger);
+}
+
+button.row-menu-item.danger:hover:not(:disabled) {
+  background: #ef44441a;
+  color: var(--danger);
+}
+
+.taps-table .col-tap,
+.taps-table .col-path {
+  overflow: hidden;
+}
+
+.tap-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.tap-pair-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.tap-pair-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--text-disabled);
+}
+
+.tap-pair-ep .tap-pair-icon {
+  color: var(--text-muted);
+}
+
+.tap-pair-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tap-pair-ep .tap-pair-text {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tap-pair-dest .tap-pair-text {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.taps-table .cell-timer {
+  font-variant-numeric: tabular-nums;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.taps-table tr.tap-pending td {
+  color: var(--text-muted);
 }
 
 .table-tray th {
@@ -923,7 +1201,8 @@ button {
 }
 
 button:hover:not(:disabled) {
-  background: var(--accent-hover);
+  background: var(--accent);
+  color: var(--accent-foreground);
 }
 
 button:disabled {
@@ -941,6 +1220,7 @@ button.stop {
 
 button.ghost:hover {
   background: var(--bg-elevated);
+  color: var(--text-primary);
 }
 
 button.stop {
@@ -950,6 +1230,7 @@ button.stop {
 
 button.stop:hover {
   background: #ef44441a;
+  color: var(--danger);
 }
 
 button.icon-btn {
@@ -1185,8 +1466,70 @@ button.tap-action.tap-active:hover:not(:disabled) {
   font-weight: 500;
 }
 
-.dialog .field span {
+.dialog .field > span,
+.dialog .field .field-label {
   line-height: 1.2;
+}
+
+.field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.info-tip {
+  position: relative;
+  display: inline-flex;
+}
+
+button.info-tip-btn {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-disabled);
+}
+
+button.info-tip-btn:hover:not(:disabled),
+.info-tip:focus-within button.info-tip-btn {
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.info-tip-pop {
+  display: none;
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  z-index: 50;
+  width: 268px;
+  padding: 10px 12px;
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px #00000080;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.info-tip-pop strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.info-tip:hover .info-tip-pop,
+.info-tip:focus-within .info-tip-pop {
+  display: block;
+}
+
+.dialog .field-label label {
+  margin: 0;
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
 }
 
 .dialog input {
@@ -1299,10 +1642,10 @@ button.tap-action.tap-active:hover:not(:disabled) {
   text-align: left;
 }
 
-.hd-select-item:hover:not(:disabled),
-.hd-select-item.is-active {
-  background: var(--bg-surface);
-  color: var(--text-primary);
+button.hd-select-item:hover:not(:disabled),
+button.hd-select-item.is-active {
+  background: var(--accent);
+  color: var(--accent-foreground);
 }
 
 .hd-select-item-label {
@@ -1319,6 +1662,11 @@ button.tap-action.tap-active:hover:not(:disabled) {
   height: 16px;
   color: var(--text-primary);
   opacity: 0;
+}
+
+button.hd-select-item:hover:not(:disabled) .hd-select-check,
+button.hd-select-item.is-active .hd-select-check {
+  color: var(--accent-foreground);
 }
 
 .hd-select-item[aria-selected="true"] .hd-select-check {
@@ -1369,6 +1717,7 @@ button.tap-action.tap-active:hover:not(:disabled) {
 
 .dialog-foot button.ghost:hover:not(:disabled) {
   background: var(--bg-elevated);
+  color: var(--text-primary);
 }
 
 .dialog-col-ports button.ghost {

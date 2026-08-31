@@ -1,0 +1,103 @@
+#!/usr/bin/env node
+/**
+ * After the three release-matrix jobs upload artifacts, build one
+ * latest.json with windows-x86_64, darwin-aarch64, and darwin-x86_64.
+ *
+ * Env: GITHUB_TOKEN, GITHUB_REPOSITORY (owner/repo), RELEASE_TAG, VERSION
+ */
+import { writeFileSync } from "node:fs";
+
+const token = process.env.GITHUB_TOKEN;
+const repo = process.env.GITHUB_REPOSITORY;
+const tag = process.env.RELEASE_TAG;
+const version = (process.env.VERSION || "").replace(/^v/, "");
+
+if (!token || !repo || !tag || !version) {
+  console.error("need GITHUB_TOKEN, GITHUB_REPOSITORY, RELEASE_TAG, VERSION");
+  process.exit(1);
+}
+
+const headers = {
+  Authorization: `Bearer ${token}`,
+  Accept: "application/vnd.github+json",
+  "X-GitHub-Api-Version": "2022-11-28",
+  "User-Agent": "hookdeploy-agent-release",
+};
+
+const res = await fetch(
+  `https://api.github.com/repos/${repo}/releases/tags/${tag}`,
+  { headers },
+);
+if (!res.ok) {
+  console.error("release lookup failed", res.status, await res.text());
+  process.exit(1);
+}
+const release = await res.json();
+const assets = release.assets || [];
+
+function findAsset(...preds) {
+  const a = assets.find((x) => preds.every((p) => p(x.name)));
+  if (!a) return null;
+  const sig = assets.find((x) => x.name === `${a.name}.sig`);
+  return { url: a.browser_download_url, sigUrl: sig?.browser_download_url, name: a.name };
+}
+
+async function sigBody(url) {
+  if (!url) throw new Error("missing .sig asset");
+  const s = await fetch(url, { headers });
+  if (!s.ok) throw new Error(`sig fetch ${s.status} ${url}`);
+  return (await s.text()).trim();
+}
+
+const windows = findAsset(
+  (n) => n.endsWith("-setup.exe") || n.endsWith("_x64-setup.exe"),
+  (n) => !n.endsWith(".sig"),
+);
+const darwinArm = findAsset(
+  (n) => n.includes("aarch64") && n.endsWith(".app.tar.gz"),
+);
+const darwinX64 = findAsset(
+  (n) =>
+    (n.includes("x64") || n.includes("x86_64")) &&
+    n.endsWith(".app.tar.gz") &&
+    !n.includes("aarch64"),
+);
+
+const missing = [
+  ["windows-x86_64", windows],
+  ["darwin-aarch64", darwinArm],
+  ["darwin-x86_64", darwinX64],
+].filter(([, v]) => !v);
+if (missing.length) {
+  console.error(
+    "missing artifacts:",
+    missing.map(([k]) => k).join(", "),
+    "have:",
+    assets.map((a) => a.name),
+  );
+  process.exit(1);
+}
+
+const platforms = {
+  "windows-x86_64": {
+    url: windows.url,
+    signature: await sigBody(windows.sigUrl),
+  },
+  "darwin-aarch64": {
+    url: darwinArm.url,
+    signature: await sigBody(darwinArm.sigUrl),
+  },
+  "darwin-x86_64": {
+    url: darwinX64.url,
+    signature: await sigBody(darwinX64.sigUrl),
+  },
+};
+
+const latest = {
+  version,
+  notes: release.body || "",
+  pub_date: new Date().toISOString(),
+  platforms,
+};
+writeFileSync("latest.json", JSON.stringify(latest, null, 2) + "\n");
+console.log("wrote latest.json", Object.keys(platforms));

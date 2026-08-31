@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
+use std::path::PathBuf;
 use std::process::{Child, Command as StdCommand, Stdio};
 use std::sync::Mutex;
 use std::thread;
@@ -12,14 +13,23 @@ use tauri_plugin_shell::ShellExt;
 
 use crate::parse::{
     is_code_prompt, is_enrolled_plain, is_wrong_code, parse_agent_cn, parse_enrolled_org,
-    parse_enrollment_url_block,
-    parse_org_list, parse_stopped_tap, parse_tap_list, parse_tapping_line, resolve_created_tap_id,
-    strip_agent_prefix, Catalog, ConnectPhase, ConnectStatus, CreatedTap, OrgInfo,
+    parse_enrollment_url_block, parse_org_list, parse_stopped_tap, parse_tap_list,
+    parse_tapping_line, resolve_created_tap_id, summarize_enroll_failure, strip_agent_prefix,
+    Catalog, ConnectPhase, ConnectStatus, CreatedTap, OrgInfo,
 };
 
 /// Wait for `Stopped tap …` after stdin EOF. CLI is usually immediate; 8s
 /// covers a slow stop POST without hanging Quit.
 pub const TAP_STOP_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Shown when the local tap child was force-killed and `tap stop` did not confirm.
+pub const TAP_STOP_UNCONFIRMED: &str =
+    "Tap process stopped locally, but couldn't confirm it stopped on the server -- check the dashboard.";
+
+enum LocalStop {
+    ExitedCleanly,
+    ForceKilled,
+}
 
 pub struct AppState {
     pub inner: Mutex<Inner>,
@@ -64,6 +74,7 @@ pub struct Snapshot {
     pub org_name: Option<String>,
     pub enroll_url: Option<String>,
     pub enroll_phase: EnrollPhase,
+    pub online: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -117,6 +128,7 @@ impl AppState {
             org_name: g.org_name.clone(),
             enroll_url: g.enroll_url.clone(),
             enroll_phase: g.enroll_phase.clone(),
+            online: crate::network::is_online(),
         }
     }
 }
@@ -126,11 +138,95 @@ fn emit_status(app: &AppHandle, status: &ConnectStatus) {
     crate::tray::sync(app, status);
 }
 
+/// Same store as `hookdeployed` `store.DefaultDir()`:
+/// `{os.UserConfigDir()}/hookdeploy/certs`, then `"certs"` if that fails.
+///
+/// Matches Go `os.UserConfigDir` per platform (pkg.go.dev/os):
+/// - Windows: `%AppData%`
+/// - Darwin: `$HOME/Library/Application Support`
+/// - other Unix: `$XDG_CONFIG_HOME` or `$HOME/.config`
+///
+/// One path for every sidecar spawn so list/connect/rename/enroll cannot
+/// drift onto different credential sets. Honors `HOOKDEPLOY_CERT_DIR` the
+/// same way the CLI does (`store.go` reads it first, before `UserConfigDir`).
+pub fn certs_dir() -> PathBuf {
+    if let Ok(env) = std::env::var("HOOKDEPLOY_CERT_DIR") {
+        let trimmed = env.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    default_certs_dir()
+}
+
+/// CLI-equivalent default (no `HOOKDEPLOY_CERT_DIR`). Split out so tests can
+/// assert against Go `UserConfigDir` without the override env var.
+pub fn default_certs_dir() -> PathBuf {
+    match platform_user_config_dir() {
+        Some(base) => base.join("hookdeploy").join("certs"),
+        None => PathBuf::from("certs"),
+    }
+}
+
+/// Mirror of Go `os.UserConfigDir` (not the old tray fallback that treated
+/// Darwin as Linux and landed in `~/.config`).
+fn platform_user_config_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME").map(|h| {
+            PathBuf::from(h)
+                .join("Library")
+                .join("Application Support")
+        })
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        None
+    }
+}
+
+/// Insert `-certs <certs_dir()>` after the subcommand. For `tap list` / `tap stop`
+/// the second word is part of the command (Go dispatches on it), so the flag
+/// goes after that pair. Every other command gets the flag as argv[1].
+pub fn with_certs(args: impl IntoIterator<Item = impl AsRef<str>>) -> Vec<String> {
+    let incoming: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
+    let dir = certs_dir().to_string_lossy().into_owned();
+    if incoming.is_empty() {
+        return vec!["-certs".into(), dir];
+    }
+    let mut out = Vec::with_capacity(incoming.len() + 2);
+    out.push(incoming[0].clone());
+    let rest = if incoming[0] == "tap"
+        && incoming.len() > 1
+        && (incoming[1] == "list" || incoming[1] == "stop")
+    {
+        out.push(incoming[1].clone());
+        &incoming[2..]
+    } else {
+        &incoming[1..]
+    };
+    out.push("-certs".into());
+    out.push(dir);
+    out.extend(rest.iter().cloned());
+    out
+}
+
 fn sidecar(
     app: &AppHandle,
     args: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Result<tauri_plugin_shell::process::Command, String> {
-    let args: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
+    let args = with_certs(args);
     Ok(app
         .shell()
         .sidecar("hookdeployed")
@@ -220,7 +316,7 @@ fn tap_list_json_direct() -> Result<String, String> {
         .find(|p| p.exists())
         .ok_or_else(|| "sidecar hookdeployed not found next to the tray".to_string())?;
     let out = StdCommand::new(sidecar)
-        .args(["tap", "list", "-json"])
+        .args(with_certs(["tap", "list", "-json"]))
         .output()
         .map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -287,7 +383,6 @@ async fn watch_connect(
                 if line.is_empty() {
                     continue;
                 }
-                let _ = app.emit("connect-log", &line);
                 let state = app.state::<AppState>();
                 let mut g = state.inner.lock().expect("state");
                 if g.connect_gen != gen {
@@ -317,9 +412,7 @@ async fn watch_connect(
                 emit_status(&app, &status);
                 break;
             }
-            CommandEvent::Error(err) => {
-                let _ = app.emit("connect-log", format!("error: {err}"));
-            }
+            CommandEvent::Error(_) => {}
             _ => {}
         }
     }
@@ -469,12 +562,21 @@ pub async fn stop_tap(app: &AppHandle, tap_id: String) -> Result<(), String> {
         })
         .await
         .map_err(|e| e.to_string())?;
-        if local.is_ok() {
-            return Ok(());
+        match local {
+            Ok(LocalStop::ExitedCleanly) => return Ok(()),
+            Ok(LocalStop::ForceKilled) | Err(_) => {
+                return confirm_server_tap_stop(app, &tap_id).await;
+            }
         }
     }
-    sidecar_output(app, &["tap", "stop", &tap_id]).await?;
-    Ok(())
+    confirm_server_tap_stop(app, &tap_id).await
+}
+
+async fn confirm_server_tap_stop(app: &AppHandle, tap_id: &str) -> Result<(), String> {
+    match sidecar_output(app, &["tap", "stop", tap_id]).await {
+        Ok(_) => Ok(()),
+        Err(_) => Err(TAP_STOP_UNCONFIRMED.to_string()),
+    }
 }
 
 fn close_stdin_and_wait(
@@ -482,7 +584,7 @@ fn close_stdin_and_wait(
     tap_id: &str,
     timeout: Duration,
     kill_after_timeout: bool,
-) -> Result<(), String> {
+) -> Result<LocalStop, String> {
     drop(proc.child.stdin.take());
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -490,7 +592,7 @@ fn close_stdin_and_wait(
             let _ = parse_stopped_tap(&line);
         }
         match proc.child.try_wait() {
-            Ok(Some(_)) => return Ok(()),
+            Ok(Some(_)) => return Ok(LocalStop::ExitedCleanly),
             Ok(None) => thread::sleep(Duration::from_millis(50)),
             Err(e) => return Err(e.to_string()),
         }
@@ -498,7 +600,7 @@ fn close_stdin_and_wait(
     if kill_after_timeout {
         let _ = proc.child.kill();
         let _ = proc.child.wait();
-        return Ok(());
+        return Ok(LocalStop::ForceKilled);
     }
     Err(format!(
         "tap {tap_id} did not exit within {}s after stdin close",
@@ -623,7 +725,7 @@ async fn watch_enroll(
                 ) {
                     let code = payload.code.unwrap_or(-1);
                     g.enroll_phase = EnrollPhase::Failed {
-                        message: format!("enroll exited {code}"),
+                        message: summarize_enroll_failure(&buf, code),
                     };
                 }
                 let phase = g.enroll_phase.clone();
@@ -631,13 +733,15 @@ async fn watch_enroll(
                 let _ = app.emit("enroll-progress", phase);
                 break;
             }
-            CommandEvent::Error(err) => {
+            CommandEvent::Error(_) => {
                 let state = app.state::<AppState>();
                 let mut g = state.inner.lock().expect("state");
                 if g.enroll_gen != gen {
                     break;
                 }
-                g.enroll_phase = EnrollPhase::Failed { message: err };
+                g.enroll_phase = EnrollPhase::Failed {
+                    message: summarize_enroll_failure("", -1),
+                };
                 let phase = g.enroll_phase.clone();
                 drop(g);
                 let _ = app.emit("enroll-progress", phase);
@@ -687,14 +791,123 @@ pub async fn shutdown_all(app: &AppHandle) -> Result<(), String> {
         g.taps.keys().cloned().collect()
     };
     for id in ids {
-        let state = app.state::<AppState>();
-        let mut g = state.inner.lock().expect("state");
-        if let Some(mut proc) = g.taps.remove(&id) {
-            drop(g);
-            let _ = close_stdin_and_wait(&mut proc, &id, TAP_STOP_TIMEOUT, true);
+        let proc = {
+            let state = app.state::<AppState>();
+            let mut g = state.inner.lock().expect("state");
+            g.taps.remove(&id)
+        };
+        if let Some(mut proc) = proc {
+            let local = close_stdin_and_wait(&mut proc, &id, TAP_STOP_TIMEOUT, true);
+            if !matches!(local, Ok(LocalStop::ExitedCleanly)) {
+                let _ = sidecar_output(app, &["tap", "stop", &id]).await;
+            }
         }
     }
     stop_connect(app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn certs_flag_value(args: &[String]) -> &str {
+        let i = args
+            .iter()
+            .position(|a| a == "-certs")
+            .expect("expected -certs");
+        args.get(i + 1).map(String::as_str).expect("expected path")
+    }
+
+    #[test]
+    fn certs_dir_is_absolute_hookdeploy_certs() {
+        let dir = default_certs_dir();
+        assert!(
+            dir.is_absolute(),
+            "default_certs_dir must be absolute, got {}",
+            dir.display()
+        );
+        assert_eq!(dir.file_name().and_then(|s| s.to_str()), Some("certs"));
+        assert_eq!(
+            dir.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str()),
+            Some("hookdeploy")
+        );
+    }
+
+    /// Cross-reference: `hookdeployed/internal/store/store.go` `DefaultDir`:
+    /// `filepath.Join(os.UserConfigDir(), "hookdeploy", "certs")`.
+    /// Go `os.UserConfigDir` on Windows is `%AppData%` (pkg.go.dev/os?GOOS=windows).
+    #[cfg(windows)]
+    #[test]
+    fn default_certs_dir_matches_hookdeployed_user_config_dir_on_windows() {
+        let appdata = std::env::var("APPDATA").expect("APPDATA");
+        let go_user_config_dir = PathBuf::from(appdata);
+        assert_eq!(
+            default_certs_dir(),
+            go_user_config_dir.join("hookdeploy").join("certs")
+        );
+    }
+
+    /// Cross-reference: `hookdeployed/internal/store/store.go` `DefaultDir`:
+    /// `filepath.Join(os.UserConfigDir(), "hookdeploy", "certs")`.
+    /// Go `os.UserConfigDir` on Darwin is `$HOME/Library/Application Support`
+    /// (pkg.go.dev/os?GOOS=darwin). This is the split-brain this function exists
+    /// to prevent: the old tray fallback used `$HOME/.config`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn default_certs_dir_matches_hookdeployed_user_config_dir_on_darwin() {
+        let home = std::env::var("HOME").expect("HOME");
+        let go_user_config_dir = PathBuf::from(home)
+            .join("Library")
+            .join("Application Support");
+        assert_eq!(
+            default_certs_dir(),
+            go_user_config_dir.join("hookdeploy").join("certs")
+        );
+    }
+
+    /// Cross-reference: same `DefaultDir`; Go on Linux is `$XDG_CONFIG_HOME`
+    /// or `$HOME/.config`.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn default_certs_dir_matches_hookdeployed_user_config_dir_on_linux() {
+        let go_user_config_dir = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(std::env::var("HOME").expect("HOME")).join(".config")
+            });
+        assert_eq!(
+            default_certs_dir(),
+            go_user_config_dir.join("hookdeploy").join("certs")
+        );
+    }
+
+    #[test]
+    fn connect_list_tap_enroll_rename_share_one_certs_path() {
+        let list = with_certs(["list"]);
+        let connect = with_certs(["connect"]);
+        let tap_list = with_certs(["tap", "list", "-json"]);
+        let tap_start = with_certs(["tap", "ep-1", "-port", "3000", "-path", "/x", "-no-tty"]);
+        let tap_stop = with_certs(["tap", "stop", "tap-1"]);
+        let enroll = with_certs(["enroll", "-no-tty"]);
+        let rename = with_certs(["rename", "-name", "Laptop"]);
+        let switch = with_certs(["switch", "org-1"]);
+        let unenroll = with_certs(["unenroll", "-yes"]);
+
+        let expected = certs_dir().to_string_lossy().into_owned();
+        for args in [
+            &list, &connect, &tap_list, &tap_start, &tap_stop, &enroll, &rename, &switch,
+            &unenroll,
+        ] {
+            assert_eq!(certs_flag_value(args), expected.as_str(), "args={args:?}");
+        }
+        assert_eq!(&tap_list[..2], ["tap", "list"]);
+        assert_eq!(&tap_stop[..2], ["tap", "stop"]);
+        assert_eq!(tap_start[0], "tap");
+        assert_eq!(tap_start[1], "-certs");
+    }
 }
 

@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const debugDir = join(root, "src-tauri", "target", "debug");
 const dest = join(debugDir, "hookdeployed.exe");
-const tray = join(debugDir, "hookdeploy-tray.exe");
+const tray = join(debugDir, "hookdeploy-agent.exe");
 const binaries = join(root, "src-tauri", "binaries");
 const q = (p) => p.replace(/'/g, "''");
 
@@ -21,12 +21,12 @@ const ps = `
 $ErrorActionPreference = 'SilentlyContinue'
 $paths = @('${q(dest)}', '${q(tray)}')
 Get-Process | Where-Object { $_.Path -and ($paths -contains $_.Path) } | Stop-Process -Force
+# Tauri treats an already-open :1420 as "frontend ready" and starts the tray
+# while this script is still running — then the kill above races the new exe
+# (exit 0xffffffff). Free the port from leftover vite/node first.
 Get-NetTCPConnection -LocalPort 1420 -State Listen -ErrorAction SilentlyContinue |
   ForEach-Object {
-    $p = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.OwningProcess)" -ErrorAction SilentlyContinue
-    if ($p.CommandLine -match 'hookdeploy-tray') {
-      Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
-    }
+    Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue
   }
 Start-Sleep -Milliseconds 400
 exit 0

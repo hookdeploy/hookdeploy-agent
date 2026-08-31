@@ -25,12 +25,25 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' customprotocol:; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self' http://localhost:1420; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:1420; style-src 'self' 'unsafe-inline' http://localhost:1420; font-src 'self' http://localhost:1420; img-src 'self' http://localhost:1420; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420 ws://localhost:1421; object-src 'none'; base-uri 'self'; form-action 'self'"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVCOENFMEM4RTIxREZFMjgKUldRby9oM2l5T0NNNjlQQWZMakJ6dHdLK0FUbFRhUXdTZzRKdENGQkxOeEVBdEVYUHU3eTFxQmMK",
+      "endpoints": [
+        "https://github.com/hookdeploy/hookdeploy-agent/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -38,6 +51,11 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/hookdeployed"]
+    "externalBin": ["binaries/hookdeployed"],
+    "macOS": {
+      "signingIdentity": "Developer ID Application: HookDeploy (TEAMID)",
+      "hardenedRuntime": true,
+      "entitlements": null
+    }
   }
 }
