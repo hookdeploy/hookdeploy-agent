@@ -115,7 +115,6 @@ let orgs: OrgInfo[] = [];
 let catalog: Catalog = { endpoints: [], taps: [] };
 let ports: PortInfo[] = [];
 let hostname: string | null = null;
-let page: Page = "dashboard";
 let endpointsPage = 1;
 let selectedDest: { endpointId: string; destId: string | null } | null = null;
 let pendingEndTaps: { tapIds: string[]; endpointName: string } | null = null;
@@ -457,7 +456,6 @@ function setAuthed(enrolled: boolean) {
 
 function showPage(next: Page) {
   if (!isEnrolled()) return;
-  page = next;
   document.querySelectorAll<HTMLButtonElement>(".nav-item").forEach((btn) => {
     btn.classList.toggle("active", btn.dataset.page === next);
   });
