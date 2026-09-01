@@ -89,6 +89,34 @@ impl ConnectStatus {
     }
 }
 
+/// Hostname / short id from `connected relay=…` (e.g. `relay-us-west-01.hookdeploy.dev`
+/// → `us-west-01`). Matches the window's `relayInstanceId`.
+pub fn relay_short_name(relay: &str) -> String {
+    let host = relay.split('/').next().unwrap_or(relay);
+    let host = host.split(':').next().unwrap_or(host);
+    let name = host.split('.').next().unwrap_or(host);
+    let stripped = if let Some(rest) = name.strip_prefix("relay-") {
+        rest
+    } else if let Some(rest) = name.strip_prefix("Relay-") {
+        rest
+    } else {
+        name
+    };
+    if stripped.is_empty() {
+        relay.to_string()
+    } else {
+        stripped.to_string()
+    }
+}
+
+/// Active org `name` from `agent list` (`parse_org_list`). Never a raw CLI line.
+pub fn active_org_name(orgs: &[OrgInfo]) -> Option<String> {
+    orgs.iter()
+        .find(|o| o.active)
+        .map(|o| o.name.trim().to_string())
+        .filter(|s| !s.is_empty() && !enroll_line_looks_leaky(s))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrgInfo {
     pub id: String,
@@ -540,13 +568,17 @@ pub fn parse_agent_cn(line: &str) -> Option<String> {
     Some(cn.to_string())
 }
 
-pub fn parse_enrolled_org(line: &str) -> Option<String> {
-    let line = strip_agent_prefix(line);
+pub fn parse_enrolled_org(text: &str) -> Option<String> {
+    let text = strip_agent_prefix(text);
     // Prompt has no newline, so success is glued:
     // "Enter the code from the browser: enrolled in Acme"
-    let rest = line.find("enrolled in ").map(|i| &line[i + "enrolled in ".len()..])?;
-    let org = rest.trim();
-    if org.is_empty() {
+    // Callers also pass the full enroll *buffer*; take only the rest of that
+    // line so later sidecar stdout (e.g. `stored cert in /path`) cannot become
+    // the org name.
+    let idx = text.find("enrolled in ")?;
+    let rest = &text[idx + "enrolled in ".len()..];
+    let org = rest.lines().next()?.trim();
+    if org.is_empty() || enroll_line_looks_leaky(org) {
         return None;
     }
     Some(org.to_string())
@@ -571,7 +603,7 @@ pub fn is_code_prompt(line: &str) -> bool {
 const ENROLL_FAIL_GENERIC: &str = "Enrollment failed. Check your connection and try again.";
 const ENROLL_FAIL_MAX: usize = 160;
 
-fn enroll_line_looks_leaky(line: &str) -> bool {
+pub(crate) fn enroll_line_looks_leaky(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     lower.contains("stored cert")
         || lower.contains("cn=")
@@ -650,6 +682,11 @@ mod tests {
         assert_eq!(orgs[0].name, "Acme Corp");
         assert_eq!(orgs[1].id, "org-2");
         assert!(!orgs[1].active);
+        assert_eq!(active_org_name(&orgs).as_deref(), Some("Acme Corp"));
+        let leaky = "agent: stored cert in C:\\x org=Acme CN=a OU=o\n* org-1  Acme Corp  acme\n";
+        let mixed = parse_org_list(leaky).unwrap();
+        assert_eq!(active_org_name(&mixed).as_deref(), Some("Acme Corp"));
+        assert!(!active_org_name(&mixed).unwrap().contains("stored cert"));
     }
 
     #[test]
@@ -796,6 +833,18 @@ tap-live
         assert_eq!(
             parse_enrolled_org("Enter the code from the browser: enrolled in HOOKDEPLOY").unwrap(),
             "HOOKDEPLOY"
+        );
+        let leaky_buf = "Enter the code from the browser: enrolled in Acme\nagent: stored cert in C:\\Users\\x\\.hookdeploy\\certs org=Acme CN=agent-1 OU=org-1\n";
+        assert_eq!(parse_enrolled_org(leaky_buf).unwrap(), "Acme");
+        assert!(!parse_enrolled_org(leaky_buf).unwrap().contains("stored cert"));
+        assert!(parse_enrolled_org("enrolled in stored cert in C:\\x").is_none());
+        assert_eq!(
+            relay_short_name("relay-us-west-01.hookdeploy.dev"),
+            "us-west-01"
+        );
+        assert_eq!(
+            relay_short_name("relay-us-east-01.hookdeploy.dev remote=1.2.3.4:9443"),
+            "us-east-01"
         );
         assert!(is_enrolled_plain("Enter the code from the browser: enrolled"));
         assert_eq!(

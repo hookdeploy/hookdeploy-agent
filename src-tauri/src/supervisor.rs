@@ -12,10 +12,10 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 use crate::parse::{
-    is_code_prompt, is_enrolled_plain, is_wrong_code, parse_agent_cn, parse_enrolled_org,
-    parse_enrollment_url_block, parse_org_list, parse_stopped_tap, parse_tap_list,
-    parse_tapping_line, resolve_created_tap_id, summarize_enroll_failure, strip_agent_prefix,
-    Catalog, ConnectPhase, ConnectStatus, CreatedTap, OrgInfo,
+    active_org_name, is_code_prompt, is_enrolled_plain, is_wrong_code, parse_agent_cn,
+    parse_enrolled_org, parse_enrollment_url_block, parse_org_list, parse_stopped_tap,
+    parse_tap_list, parse_tapping_line, resolve_created_tap_id, summarize_enroll_failure,
+    strip_agent_prefix, Catalog, ConnectPhase, ConnectStatus, CreatedTap, OrgInfo,
 };
 
 /// Wait for `Stopped tap …` after stdin EOF. CLI is usually immediate; 8s
@@ -262,7 +262,19 @@ pub async fn rename_agent(app: &AppHandle, name: String) -> Result<String, Strin
 
 pub async fn list_orgs(app: &AppHandle) -> Result<Vec<OrgInfo>, String> {
     let stdout = sidecar_output(app, &["list"]).await?;
-    parse_org_list(&stdout)
+    let orgs = parse_org_list(&stdout)?;
+    remember_active_org(app, &orgs);
+    Ok(orgs)
+}
+
+fn remember_active_org(app: &AppHandle, orgs: &[OrgInfo]) {
+    let name = active_org_name(orgs);
+    let state = app.state::<AppState>();
+    let mut g = state.inner.lock().expect("state");
+    g.org_name = name;
+    let status = g.status.clone();
+    drop(g);
+    crate::tray::sync(app, &status);
 }
 
 pub async fn switch_org(app: &AppHandle, id: String) -> Result<Vec<OrgInfo>, String> {
@@ -287,7 +299,10 @@ pub async fn unenroll(app: &AppHandle) -> Result<Vec<OrgInfo>, String> {
     }
     match list_orgs(app).await {
         Ok(orgs) => Ok(orgs),
-        Err(_) => Ok(Vec::new()),
+        Err(_) => {
+            remember_active_org(app, &[]);
+            Ok(Vec::new())
+        }
     }
 }
 
