@@ -105,9 +105,9 @@ impl Default for Inner {
 }
 
 fn local_hostname() -> Option<String> {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
+    hostname::get()
         .ok()
+        .and_then(|s| s.into_string().ok())
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }

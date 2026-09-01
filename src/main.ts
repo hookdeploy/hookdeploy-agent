@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
+import { forwardsHere as endpointForwardsHere } from "./forwardsHere";
 
 type Phase = "disconnected" | "connecting" | "connected" | "reconnecting" | "revoked";
 type Page = "dashboard" | "endpoints" | "taps" | "settings";
@@ -26,6 +27,7 @@ interface DestinationInfo {
   id: string;
   name: string;
   kind: string;
+  agent_id?: string | null;
 }
 
 interface EndpointInfo {
@@ -115,6 +117,7 @@ let orgs: OrgInfo[] = [];
 let catalog: Catalog = { endpoints: [], taps: [] };
 let ports: PortInfo[] = [];
 let hostname: string | null = null;
+let currentAgentId: string | null = null;
 let endpointsPage = 1;
 let selectedDest: { endpointId: string; destId: string | null } | null = null;
 let pendingEndTaps: { tapIds: string[]; endpointName: string } | null = null;
@@ -323,8 +326,14 @@ function savedId(endpointId: string, destId: string | null, port: number, path: 
   return `${endpointId}:${destId ?? "endpoint"}:${port}:${path}`;
 }
 
+function applySnapshotIdentity(snap: Snapshot) {
+  currentAgentId = snap.agent_id?.trim() || null;
+  hostname = snap.agent_name?.trim() || null;
+  applyAgentName();
+}
+
 function forwardsHere(ep: EndpointInfo): boolean {
-  return ep.destinations.some((d) => d.kind === "agent");
+  return endpointForwardsHere(ep.destinations, currentAgentId);
 }
 
 function tapsForEndpoint(ep: EndpointInfo): TapInfo[] {
@@ -1209,6 +1218,8 @@ function setDialogOpen(open: boolean, endpointId?: string) {
 }
 
 async function refreshCatalog() {
+  const snap = await invoke<Snapshot>("get_snapshot").catch(() => null);
+  if (snap) applySnapshotIdentity(snap);
   catalog = await invoke<Catalog>("list_endpoints");
   renderAll();
 }
@@ -1270,6 +1281,7 @@ async function unenrollCurrentOrg() {
     const remaining = await invoke<OrgInfo[]>("unenroll");
     orgs = remaining;
     catalog = { endpoints: [], taps: [] };
+    currentAgentId = null;
     endpointsPage = 1;
     renderOrgs();
     if (remaining.length === 0) {
@@ -1419,8 +1431,8 @@ function applyEnrollPhase(phase: Snapshot["enroll_phase"]) {
     enrollConnectStarted = true;
     void refreshOrgs().then(async (ok) => {
       const snap = await invoke<Snapshot>("get_snapshot").catch(() => null);
-      if (snap) hostname = snap.agent_name;
-      applyAgentName();
+      if (snap) applySnapshotIdentity(snap);
+      else applyAgentName();
       if (ok) {
         await refreshCatalog();
         await invoke("start_connect", { region: null }).catch((e) => showError(invokeError(e)));
@@ -1671,7 +1683,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   let pendingEnroll: Snapshot["enroll_phase"] | null = null;
   try {
     const snap = await invoke<Snapshot>("get_snapshot");
-    hostname = snap.agent_name;
+    applySnapshotIdentity(snap);
     applyStatus(snap.status);
     if (typeof snap.online === "boolean") {
       osOnline = snap.online;
