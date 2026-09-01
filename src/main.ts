@@ -9,6 +9,21 @@ import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { forwardsHere as endpointForwardsHere } from "./forwardsHere";
 import { isFirstLaunch, markFirstLaunchDone, setAutostartEnabled } from "./firstLaunch";
 import {
+  UPDATE_CHECK_INTERVAL_MS,
+  applyCheckOutcome,
+  beginInstall,
+  dismissBanner,
+  failInstall,
+  finishInstall,
+  initialUpdaterState,
+  releaseUrl,
+  remindIfPending,
+  showPendingBanner,
+  startUpdateCheckLoop,
+  viewFromState,
+  type UpdaterState,
+} from "./updater";
+import {
   applyOtpBackspace,
   applyOtpInput,
   ENROLL_CODE_GROUP,
@@ -1587,34 +1602,83 @@ function applyEnrollPhase(phase: Snapshot["enroll_phase"]) {
 }
 
 let pendingUpdate: Update | null = null;
+let updaterState: UpdaterState = initialUpdaterState();
 
 function setUpdateStatus(text: string) {
   const el = document.getElementById("update-status");
   if (el) el.textContent = text;
 }
 
-async function checkForUpdates(interactive: boolean) {
-  const btn = document.getElementById("check-updates") as HTMLButtonElement | null;
+function commitUpdater(next: UpdaterState) {
+  updaterState = next;
+  const view = viewFromState(next);
+  const banner = document.getElementById("update-banner");
+  const copy = document.getElementById("update-banner-copy");
+  const action = document.getElementById("update-banner-action") as HTMLButtonElement | null;
+  const viewLink = document.getElementById("update-banner-view") as HTMLAnchorElement | null;
   const foot = document.getElementById("update-foot");
+  const install = document.getElementById("install-update") as HTMLButtonElement | null;
+  const restart = document.getElementById("restart-update") as HTMLButtonElement | null;
+  const checkBtn = document.getElementById("check-updates") as HTMLButtonElement | null;
+
+  banner?.classList.toggle("hidden", !view.bannerVisible);
+  if (copy) {
+    if (view.bannerKind === "available" && view.version) {
+      copy.textContent = `Version ${view.version} is available.`;
+    } else if (view.bannerKind === "installed") {
+      copy.textContent = "Update installed. Restart to apply it — this stops active taps and disconnects.";
+    }
+  }
+  if (action) {
+    action.textContent = view.bannerKind === "installed" ? "Restart" : "Update now";
+    action.disabled = next.installing;
+  }
+  if (viewLink) {
+    viewLink.classList.toggle("hidden", view.bannerKind !== "available" || !view.version);
+    if (view.version) viewLink.href = releaseUrl(view.version);
+  }
+  setUpdateStatus(view.settingsStatus);
+  foot?.classList.toggle("hidden", !view.showInstall && !view.showRestart);
+  install?.classList.toggle("hidden", !view.showInstall);
+  restart?.classList.toggle("hidden", !view.showRestart);
+  if (install) install.disabled = next.installing;
+  if (restart) restart.disabled = next.installing;
+  if (checkBtn) checkBtn.disabled = next.installing || next.installed;
+
+  void invoke("set_update_available", {
+    version: view.trayUpdateItem ? view.version : null,
+  }).catch(() => {
+    /* tray item is best-effort; banner still works */
+  });
+}
+
+async function checkForUpdates(interactive: boolean) {
+  if (updaterState.installed) {
+    commitUpdater(remindIfPending(updaterState));
+    return;
+  }
+  const btn = document.getElementById("check-updates") as HTMLButtonElement | null;
   if (btn) btn.disabled = true;
-  if (interactive) setUpdateStatus("Checking…");
+  if (interactive) {
+    commitUpdater({ ...updaterState, settingsStatus: "Checking…" });
+  }
   try {
     const update = await check();
-    pendingUpdate = update;
     if (!update) {
-      if (foot) foot.classList.add("hidden");
-      setUpdateStatus("You’re up to date.");
+      pendingUpdate = null;
+      commitUpdater(applyCheckOutcome(updaterState, { kind: "none" }, interactive));
       return;
     }
-    if (foot) foot.classList.remove("hidden");
-    setUpdateStatus(`Version ${update.version} is available.`);
+    pendingUpdate = update;
+    commitUpdater(
+      applyCheckOutcome(updaterState, { kind: "available", version: update.version }, interactive),
+    );
   } catch (e) {
-    pendingUpdate = null;
-    if (foot) foot.classList.add("hidden");
-    if (interactive) setUpdateStatus(invokeError(e));
-    else setUpdateStatus("Could not check for updates.");
+    commitUpdater(
+      applyCheckOutcome(updaterState, { kind: "error", message: invokeError(e) }, interactive),
+    );
   } finally {
-    if (btn) btn.disabled = false;
+    if (btn && !updaterState.installing && !updaterState.installed) btn.disabled = false;
   }
 }
 
@@ -1677,18 +1741,35 @@ async function runFirstLaunchPass() {
 }
 
 async function installPendingUpdate() {
-  if (!pendingUpdate) return;
-  const btn = document.getElementById("install-update") as HTMLButtonElement | null;
-  if (btn) btn.disabled = true;
-  setUpdateStatus("Downloading update…");
+  if (!pendingUpdate || updaterState.installing || updaterState.installed) return;
+  commitUpdater(beginInstall(updaterState));
   try {
     await pendingUpdate.downloadAndInstall();
-    setUpdateStatus("Restarting…");
-    await relaunch();
+    commitUpdater(finishInstall(updaterState));
+    await showMainWindow();
   } catch (e) {
-    setUpdateStatus(invokeError(e));
-    if (btn) btn.disabled = false;
+    commitUpdater(failInstall(updaterState, invokeError(e)));
   }
+}
+
+async function restartAfterUpdate() {
+  if (!updaterState.installed) return;
+  const action = document.getElementById("update-banner-action") as HTMLButtonElement | null;
+  const restart = document.getElementById("restart-update") as HTMLButtonElement | null;
+  if (action) action.disabled = true;
+  if (restart) restart.disabled = true;
+  setUpdateStatus("Stopping taps and disconnecting…");
+  try {
+    await invoke("shutdown_all");
+  } catch {
+    /* still relaunch — same as tray Quit ignoring teardown errors */
+  }
+  await relaunch();
+}
+
+function onBannerAction() {
+  if (updaterState.banner === "installed") void restartAfterUpdate();
+  else void installPendingUpdate();
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
@@ -1858,6 +1939,20 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("install-update").addEventListener("click", () => {
     void installPendingUpdate();
   });
+  $("restart-update").addEventListener("click", () => {
+    void restartAfterUpdate();
+  });
+  $("update-banner-action").addEventListener("click", () => {
+    onBannerAction();
+  });
+  $("update-banner-dismiss").addEventListener("click", () => {
+    commitUpdater(dismissBanner(updaterState));
+  });
+  $("update-banner-view").addEventListener("click", async (ev) => {
+    ev.preventDefault();
+    const href = ($("update-banner-view") as HTMLAnchorElement).href;
+    if (href && href !== "#") await openUrl(href);
+  });
   bindEnrollOtps();
   $("settings-add-org").addEventListener("click", () => {
     void startLogin();
@@ -1885,6 +1980,10 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   await listen<ConnectStatus>("connect-status", (e) => applyStatus(e.payload));
   await listen<Snapshot["enroll_phase"]>("enroll-progress", (e) => applyEnrollPhase(e.payload));
+  await listen("update-tray-clicked", () => {
+    commitUpdater(showPendingBanner(updaterState));
+    void showMainWindow();
+  });
 
   let pendingEnroll: Snapshot["enroll_phase"] | null = null;
   try {
@@ -1921,7 +2020,14 @@ window.addEventListener("DOMContentLoaded", async () => {
       showError(invokeError(e));
     }
   }
-  void checkForUpdates(false);
   await runFirstLaunchPass();
   void refreshAutostartToggle();
+  startUpdateCheckLoop(
+    () => checkForUpdates(false),
+    UPDATE_CHECK_INTERVAL_MS,
+    {
+      setInterval: (handler, ms) => window.setInterval(handler, ms),
+      clearInterval: (id) => window.clearInterval(id as number),
+    },
+  );
 });

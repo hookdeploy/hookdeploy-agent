@@ -15,6 +15,15 @@
       <button id="onboarding-dismiss" type="button" class="ghost">Got it</button>
     </div>
 
+    <div id="update-banner" class="update-banner hidden" role="status">
+      <p id="update-banner-copy">A new version is available.</p>
+      <div class="update-banner-actions">
+        <a id="update-banner-view" class="update-banner-link" href="#" target="_blank" rel="noreferrer">View release</a>
+        <button id="update-banner-action" type="button">Update now</button>
+        <button id="update-banner-dismiss" type="button" class="ghost">Dismiss</button>
+      </div>
+    </div>
+
     <div id="offline" class="offline hidden" role="status" aria-live="polite">
       <div class="gate-card">
         <img
@@ -298,7 +307,8 @@
                       <button id="check-updates" type="button">Check for updates</button>
                     </div>
                     <div id="update-foot" class="panel-foot hidden">
-                      <button id="install-update" type="button">Install and restart</button>
+                      <button id="install-update" type="button">Update now</button>
+                      <button id="restart-update" type="button" class="hidden">Restart</button>
                     </div>
                   </div>
                 </div>
