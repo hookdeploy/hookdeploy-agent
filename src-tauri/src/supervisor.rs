@@ -609,7 +609,7 @@ fn close_stdin_and_wait(
 }
 
 pub async fn enroll_start(app: &AppHandle) -> Result<EnrollPhase, String> {
-    let (rx, child) = sidecar(app, ["enroll", "-no-tty"])?
+    let (rx, child) = sidecar(app, ["enroll", "-no-tty", "-client=agent-gui"])?
         .spawn()
         .map_err(|e| e.to_string())?;
 
@@ -892,7 +892,7 @@ mod tests {
         let tap_list = with_certs(["tap", "list", "-json"]);
         let tap_start = with_certs(["tap", "ep-1", "-port", "3000", "-path", "/x", "-no-tty"]);
         let tap_stop = with_certs(["tap", "stop", "tap-1"]);
-        let enroll = with_certs(["enroll", "-no-tty"]);
+        let enroll = with_certs(["enroll", "-no-tty", "-client=agent-gui"]);
         let rename = with_certs(["rename", "-name", "Laptop"]);
         let switch = with_certs(["switch", "org-1"]);
         let unenroll = with_certs(["unenroll", "-yes"]);
@@ -908,6 +908,11 @@ mod tests {
         assert_eq!(&tap_stop[..2], ["tap", "stop"]);
         assert_eq!(tap_start[0], "tap");
         assert_eq!(tap_start[1], "-certs");
+        assert!(
+            enroll.iter().any(|a| a == "-client=agent-gui"),
+            "tray enroll must tag agent-gui: {enroll:?}"
+        );
+        assert!(enroll.iter().any(|a| a == "-no-tty"), "args={enroll:?}");
     }
 }
 
