@@ -89,6 +89,16 @@ fn list_ports() -> Result<Vec<ports::PortInfo>, String> {
     ports::list_ports()
 }
 
+#[tauri::command]
+async fn shutdown_all(app: tauri::AppHandle) -> Result<(), String> {
+    supervisor::shutdown_all(&app).await
+}
+
+#[tauri::command]
+fn set_update_available(version: Option<String>) {
+    tray::set_update_available(version.as_deref());
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -112,7 +122,9 @@ pub fn run() {
             list_taps,
             enroll_start,
             enroll_submit_code,
-            list_ports
+            list_ports,
+            shutdown_all,
+            set_update_available
         ])
         .setup(|app| {
             // Menu-bar extra: hide the Dock icon. macOS-only API; Windows has no

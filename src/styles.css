@@ -121,6 +121,55 @@ body {
   height: 32px;
 }
 
+.update-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--accent-border);
+}
+
+.update-banner p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.update-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.update-banner-link {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  padding: 0 8px;
+}
+
+.update-banner-link:hover {
+  color: var(--text-primary);
+}
+
+.update-banner button {
+  height: 32px;
+}
+
+.update-banner button.ghost {
+  height: 32px;
+}
+
 .toggle {
   position: relative;
   display: inline-flex;
