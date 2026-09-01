@@ -116,6 +116,11 @@ body {
   color: var(--text-secondary);
 }
 
+.onboarding code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
 .onboarding button.ghost {
   flex-shrink: 0;
   height: 32px;
