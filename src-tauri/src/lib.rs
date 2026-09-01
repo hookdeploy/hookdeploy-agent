@@ -96,6 +96,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
@@ -114,6 +115,13 @@ pub fn run() {
             list_ports
         ])
         .setup(|app| {
+            // Menu-bar extra: hide the Dock icon. macOS-only API; Windows has no
+            // equivalent and this block is compiled out there.
+            // https://docs.rs/tauri/latest/tauri/struct.AppHandle.html#method.set_activation_policy
+            #[cfg(target_os = "macos")]
+            let _ = app
+                .handle()
+                .set_activation_policy(tauri::ActivationPolicy::Accessory);
             tray::install(app.handle())?;
             network::start(app.handle().clone());
             Ok(())
