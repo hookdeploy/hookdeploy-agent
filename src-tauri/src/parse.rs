@@ -141,6 +141,27 @@ pub struct DestinationInfo {
     pub id: String,
     pub name: String,
     pub kind: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+}
+
+fn nonempty_id(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Strict equality: a destination forwards here only when both ids are
+/// present and identical. Null / empty / a leftover previous-agent id never match.
+pub fn dest_forwards_here(dest_agent_id: Option<&str>, current_agent_id: Option<&str>) -> bool {
+    match (
+        nonempty_id(dest_agent_id),
+        nonempty_id(current_agent_id),
+    ) {
+        (Some(dest), Some(live)) => dest == live,
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,6 +232,8 @@ struct DestJson {
     name: String,
     #[serde(default)]
     destination_type: String,
+    #[serde(default)]
+    agent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -277,6 +300,7 @@ fn parse_tap_list_json(raw: &str) -> Result<Catalog, String> {
                         } else {
                             d.destination_type.clone()
                         },
+                        agent_id: nonempty_id(d.agent_id.as_deref()),
                     })
                     .collect(),
             }
@@ -353,6 +377,7 @@ fn parse_endpoints_section(head: &str) -> Vec<EndpointInfo> {
                         id: rest.trim().to_string(),
                         name,
                         kind,
+                        agent_id: None,
                     });
                 }
             }
@@ -694,6 +719,11 @@ tap-live
         assert_eq!(cat.endpoints[0].url.as_deref(), Some("https://hookdeploy.dev/a/orders"));
         assert_eq!(cat.endpoints[0].slug.as_deref(), Some("orders"));
         assert_eq!(cat.endpoints[0].destinations[1].kind, "agent");
+        assert_eq!(cat.endpoints[0].destinations[0].agent_id, None);
+        assert_eq!(
+            cat.endpoints[0].destinations[1].agent_id.as_deref(),
+            Some("agent-1")
+        );
         assert_eq!(cat.endpoints[1].destinations.len(), 0);
         assert_eq!(cat.taps[0].endpoint, "Orders");
         assert_eq!(cat.taps[0].destination, "prod-https");
@@ -794,5 +824,18 @@ tap-live
             summarize_enroll_failure("wrong code — try again\n", 1),
             "wrong code — try again"
         );
+    }
+
+    #[test]
+    fn dest_forwards_here_requires_exact_current_id() {
+        let live = Some("agent-live");
+        let leftover = Some("agent-from-last-enrollment");
+        assert!(!dest_forwards_here(None, live));
+        assert!(!dest_forwards_here(Some(""), live));
+        assert!(!dest_forwards_here(Some("  "), live));
+        assert!(!dest_forwards_here(live, None));
+        assert!(!dest_forwards_here(leftover, live));
+        assert!(dest_forwards_here(live, live));
+        assert!(dest_forwards_here(Some(" agent-live "), Some("agent-live")));
     }
 }
