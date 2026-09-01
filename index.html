@@ -52,8 +52,9 @@
         </p>
         <button class="enroll-start" type="button">Login</button>
         <div class="enroll-code-wrap hidden enroll-code">
-          <label>Code from the browser</label>
-          <input class="enroll-code-input mono" maxlength="12" autocomplete="off" />
+          <p class="enroll-waiting hidden">Waiting for you to finish in your browser…</p>
+          <label class="enroll-code-label">Code from the browser</label>
+          <div class="enroll-otp" data-enroll-otp role="group" aria-label="Enrollment code"></div>
           <button class="enroll-submit" type="button">Submit code</button>
         </div>
       </div>
@@ -247,10 +248,9 @@
                           <a class="enroll-url" href="#" target="_blank" rel="noreferrer">open the enroll URL</a>.
                         </p>
                         <div class="enroll-code-wrap hidden enroll-code">
-                          <label class="field">
-                            <span>Code from the browser</span>
-                            <input class="enroll-code-input mono" maxlength="12" autocomplete="off" />
-                          </label>
+                          <p class="enroll-waiting hidden">Waiting for you to finish in your browser…</p>
+                          <label class="enroll-code-label">Code from the browser</label>
+                          <div class="enroll-otp" data-enroll-otp role="group" aria-label="Enrollment code"></div>
                           <button class="enroll-submit" type="button">Submit code</button>
                         </div>
                       </section>

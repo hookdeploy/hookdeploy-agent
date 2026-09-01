@@ -8,6 +8,15 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { forwardsHere as endpointForwardsHere } from "./forwardsHere";
 import { isFirstLaunch, markFirstLaunchDone, setAutostartEnabled } from "./firstLaunch";
+import {
+  applyOtpBackspace,
+  applyOtpInput,
+  ENROLL_CODE_GROUP,
+  ENROLL_CODE_LENGTH,
+  enrollCodeComplete,
+  joinEnrollCode,
+  splitEnrollCode,
+} from "./enrollOtp";
 
 type Phase = "disconnected" | "connecting" | "connected" | "reconnecting" | "revoked";
 type Page = "dashboard" | "endpoints" | "taps" | "settings";
@@ -1247,11 +1256,136 @@ function setEnrollCopy(text: string) {
   });
 }
 
-function enrollCodeValue(): string {
-  for (const input of document.querySelectorAll<HTMLInputElement>(".enroll-code-input")) {
-    if (input.value.trim()) return input.value;
+let enrollBoxes = splitEnrollCode("");
+let enrollOtpSubmitting = false;
+
+function enrollOtpRoots(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>("[data-enroll-otp]")];
+}
+
+function buildEnrollOtps() {
+  for (const root of enrollOtpRoots()) {
+    root.replaceChildren();
+    for (let i = 0; i < ENROLL_CODE_LENGTH; i++) {
+      if (i === ENROLL_CODE_GROUP) {
+        const dash = document.createElement("span");
+        dash.className = "enroll-otp-dash";
+        dash.setAttribute("aria-hidden", "true");
+        dash.textContent = "–";
+        root.appendChild(dash);
+      }
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "enroll-otp-box mono";
+      input.maxLength = 1;
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.inputMode = "text";
+      input.setAttribute("aria-label", `Character ${i + 1} of ${ENROLL_CODE_LENGTH}`);
+      input.dataset.otpIndex = String(i);
+      root.appendChild(input);
+    }
   }
-  return "";
+}
+
+function paintEnrollOtps() {
+  for (const root of enrollOtpRoots()) {
+    root.querySelectorAll<HTMLInputElement>(".enroll-otp-box").forEach((input, i) => {
+      input.value = enrollBoxes[i] ?? "";
+    });
+  }
+}
+
+function focusEnrollOtp(index: number) {
+  const roots = enrollOtpRoots();
+  const visible = roots.find((r) => r.offsetParent !== null) ?? roots[0];
+  visible?.querySelectorAll<HTMLInputElement>(".enroll-otp-box")[index]?.focus();
+}
+
+function enrollCodeValue(): string {
+  return joinEnrollCode(enrollBoxes);
+}
+
+function resetEnrollOtp() {
+  enrollBoxes = splitEnrollCode("");
+  enrollOtpSubmitting = false;
+  paintEnrollOtps();
+}
+
+function setEnrollLoginVisible(visible: boolean) {
+  document.querySelectorAll(".enroll-start").forEach((el) => {
+    el.classList.toggle("hidden", !visible);
+  });
+  document.querySelectorAll(".enroll-waiting").forEach((el) => {
+    el.classList.toggle("hidden", visible);
+  });
+  const addOrg = document.getElementById("settings-add-org");
+  if (addOrg) addOrg.classList.toggle("hidden", !visible);
+}
+
+async function submitEnrollCode() {
+  const code = enrollCodeValue();
+  if (code.length !== ENROLL_CODE_LENGTH || enrollOtpSubmitting) return;
+  enrollOtpSubmitting = true;
+  try {
+    applyEnrollPhase(await invoke("enroll_submit_code", { code }));
+  } catch (e) {
+    showError(invokeError(e));
+  } finally {
+    enrollOtpSubmitting = false;
+  }
+}
+
+function maybeAutoSubmitEnroll() {
+  if (enrollCodeComplete(enrollBoxes)) void submitEnrollCode();
+}
+
+function bindEnrollOtps() {
+  buildEnrollOtps();
+  paintEnrollOtps();
+  document.addEventListener("input", (ev) => {
+    const input = (ev.target as HTMLElement | null)?.closest<HTMLInputElement>(".enroll-otp-box");
+    if (!input) return;
+    const index = Number(input.dataset.otpIndex);
+    const next = applyOtpInput(enrollBoxes, index, input.value);
+    enrollBoxes = next.boxes;
+    paintEnrollOtps();
+    focusEnrollOtp(next.focus);
+    maybeAutoSubmitEnroll();
+  });
+  document.addEventListener("keydown", (ev) => {
+    const input = (ev.target as HTMLElement | null)?.closest<HTMLInputElement>(".enroll-otp-box");
+    if (!input) return;
+    const index = Number(input.dataset.otpIndex);
+    if (ev.key === "Backspace") {
+      ev.preventDefault();
+      const next = applyOtpBackspace(enrollBoxes, index);
+      enrollBoxes = next.boxes;
+      paintEnrollOtps();
+      focusEnrollOtp(next.focus);
+    } else if (ev.key === "ArrowLeft") {
+      ev.preventDefault();
+      focusEnrollOtp(Math.max(0, index - 1));
+    } else if (ev.key === "ArrowRight") {
+      ev.preventDefault();
+      focusEnrollOtp(Math.min(ENROLL_CODE_LENGTH - 1, index + 1));
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      void submitEnrollCode();
+    }
+  });
+  document.addEventListener("paste", (ev) => {
+    const input = (ev.target as HTMLElement | null)?.closest<HTMLInputElement>(".enroll-otp-box");
+    if (!input) return;
+    ev.preventDefault();
+    const pasted = ev.clipboardData?.getData("text") ?? "";
+    const index = Number(input.dataset.otpIndex);
+    const next = applyOtpInput(enrollBoxes, index, pasted);
+    enrollBoxes = next.boxes;
+    paintEnrollOtps();
+    focusEnrollOtp(next.focus);
+    maybeAutoSubmitEnroll();
+  });
 }
 
 async function refreshOrgs() {
@@ -1407,11 +1541,14 @@ function applyEnrollPhase(phase: Snapshot["enroll_phase"]) {
   }
   if (phase.kind === "failed") {
     setEnrollButtonsDisabled(false);
+    setEnrollLoginVisible(true);
+    resetEnrollOtp();
     setEnrollCopy(phase.message || "Enrollment failed.");
     showError(phase.message || "Enrollment failed.");
   }
   if (phase.kind === "browser_opened" && phase.url) {
     setEnrollButtonsDisabled(false);
+    setEnrollLoginVisible(false);
     document.querySelectorAll(".enroll-url-wrap").forEach((el) => el.classList.remove("hidden"));
     document.querySelectorAll(".enroll-code-wrap").forEach((el) => el.classList.remove("hidden"));
     document.querySelectorAll<HTMLAnchorElement>(".enroll-url").forEach((a) => {
@@ -1423,6 +1560,7 @@ function applyEnrollPhase(phase: Snapshot["enroll_phase"]) {
   if (phase.kind === "awaiting_code" || phase.kind === "wrong_code") {
     setEnrollButtonsDisabled(false);
     document.querySelectorAll(".enroll-code-wrap").forEach((el) => el.classList.remove("hidden"));
+    if (phase.kind === "wrong_code") resetEnrollOtp();
     setEnrollCopy(
       phase.kind === "wrong_code"
         ? "Wrong code — try again."
@@ -1431,6 +1569,7 @@ function applyEnrollPhase(phase: Snapshot["enroll_phase"]) {
   }
   if (phase.kind === "succeeded") {
     setEnrollButtonsDisabled(false);
+    setEnrollLoginVisible(true);
     showError(null);
     setEnrollCopy(`Enrolled${phase.org ? ` in ${phase.org}` : ""}.`);
     if (enrollConnectStarted) return;
@@ -1719,6 +1858,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   $("install-update").addEventListener("click", () => {
     void installPendingUpdate();
   });
+  bindEnrollOtps();
   $("settings-add-org").addEventListener("click", () => {
     void startLogin();
   });
@@ -1728,12 +1868,8 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
   });
   document.querySelectorAll<HTMLButtonElement>(".enroll-submit").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      try {
-        applyEnrollPhase(await invoke("enroll_submit_code", { code: enrollCodeValue() }));
-      } catch (e) {
-        showError(invokeError(e));
-      }
+    btn.addEventListener("click", () => {
+      void submitEnrollCode();
     });
   });
   document.querySelectorAll<HTMLAnchorElement>(".enroll-url").forEach((a) => {
