@@ -10,7 +10,11 @@
   <body>
     <div id="onboarding" class="onboarding hidden" role="status">
       <p id="onboarding-copy">
-        HookDeploy Agent is running in your menu bar. Click the icon anytime to open this window.
+        HookDeploy Agent lives in your menu bar (no Dock icon). Click the icon anytime to reopen
+        this window. If you do not see it, open System Settings → Menu Bar and allow HookDeploy
+        Agent under “Allow in the Menu Bar”. Still missing? A Mac restart, or
+        <code>killall SystemUIServer</code> in Terminal, usually clears a known macOS Tahoe quirk
+        that affects many third-party menu bar apps.
       </p>
       <button id="onboarding-dismiss" type="button" class="ghost">Got it</button>
     </div>

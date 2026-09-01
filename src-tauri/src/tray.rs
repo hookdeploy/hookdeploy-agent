@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuBuilder, MenuItem};
-use tauri::tray::{TrayIconBuilder, TrayIconEvent};
+use tauri::tray::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 #[cfg(not(target_os = "macos"))]
 use tauri::tray::{MouseButton, MouseButtonState};
 use tauri::{AppHandle, Emitter, Manager, Wry};
@@ -13,6 +13,10 @@ use crate::parse::{
 use crate::supervisor::{shutdown_all, start_connect, stop_connect, AppState};
 
 struct TrayUi {
+    /// Explicit retain for clarity. Tauri already keeps a clone in its resource
+    /// table on `build`, so discarding the old `build(app)?` return was not a
+    /// Drop bug — the status item stayed alive via that table entry.
+    _tray: TrayIcon<Wry>,
     status: MenuItem<Wry>,
     org: MenuItem<Wry>,
     connection: MenuItem<Wry>,
@@ -95,9 +99,25 @@ pub fn install(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "macos"))]
     let builder = builder.show_menu_on_left_click(false);
 
-    builder.build(app)?;
+    let tray = builder.build(app).map_err(|err| {
+        eprintln!("hookdeploy-agent: tray icon build failed: {err}");
+        err
+    })?;
+    // Fail loud if the status item did not register. A silent Ok + missing
+    // tray is how a "app runs, no menu bar icon" regression ships.
+    if app.tray_by_id("main").is_none() {
+        eprintln!("hookdeploy-agent: tray icon 'main' missing after build");
+        return Err("tray icon failed to register with the app".into());
+    }
+    // Ensure the item is visible at the AppKit level. macOS Control Center may
+    // still host-block it (System Settings → Menu Bar); that is outside Rust.
+    tray.set_visible(true).map_err(|err| {
+        eprintln!("hookdeploy-agent: tray set_visible(true) failed: {err}");
+        err
+    })?;
 
     *TRAY.lock().expect("tray") = Some(TrayUi {
+        _tray: tray,
         status,
         org,
         connection,
@@ -423,6 +443,28 @@ mod tests {
         s.phase = ConnectPhase::Connected;
         s.relay = None;
         assert_eq!(status_label(&s), "Connected · us-west");
+    }
+
+    #[test]
+    fn install_retains_tray_handle_and_asserts_registration() {
+        let src = include_str!("tray.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        assert!(
+            prod.contains("_tray: TrayIcon<Wry>"),
+            "TrayUi must explicitly retain the TrayIcon handle"
+        );
+        assert!(
+            prod.contains("tray_by_id(\"main\")"),
+            "install must assert the tray registered under id main"
+        );
+        assert!(
+            prod.contains("set_visible(true)"),
+            "install must explicitly set the tray visible"
+        );
+        assert!(
+            prod.contains("tray icon build failed"),
+            "build errors must be logged, not swallowed"
+        );
     }
 
     #[test]
