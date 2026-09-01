@@ -1,10 +1,13 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
+import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { forwardsHere as endpointForwardsHere } from "./forwardsHere";
+import { isFirstLaunch, markFirstLaunchDone, setAutostartEnabled } from "./firstLaunch";
 
 type Phase = "disconnected" | "connecting" | "connected" | "reconnecting" | "revoked";
 type Page = "dashboard" | "endpoints" | "taps" | "settings";
@@ -476,6 +479,9 @@ function showPage(next: Page) {
   $("ep-search").classList.toggle("hidden", next !== "endpoints");
   if (next === "taps" && ports.length === 0 && "__TAURI_INTERNALS__" in window) {
     void refreshPorts().catch((e) => showError(String(e)));
+  }
+  if (next === "settings") {
+    void refreshAutostartToggle();
   }
 }
 
@@ -1473,6 +1479,64 @@ async function checkForUpdates(interactive: boolean) {
   }
 }
 
+function isMac(): boolean {
+  return /Mac/i.test(navigator.userAgent);
+}
+
+function setAutostartHint(msg: string | null) {
+  const el = document.getElementById("autostart-status");
+  if (el) el.textContent = msg ?? "";
+}
+
+async function refreshAutostartToggle() {
+  const input = document.getElementById("autostart-toggle") as HTMLInputElement | null;
+  if (!input) return;
+  try {
+    input.checked = await isEnabled();
+    setAutostartHint(null);
+  } catch (e) {
+    input.checked = false;
+    setAutostartHint(invokeError(e));
+  }
+}
+
+async function onAutostartToggle() {
+  const input = $("autostart-toggle") as HTMLInputElement;
+  input.disabled = true;
+  const result = await setAutostartEnabled(input.checked, { enable, disable, isEnabled });
+  input.checked = result.enabled;
+  setAutostartHint(result.error);
+  input.disabled = false;
+}
+
+async function showMainWindow() {
+  try {
+    const win = getCurrentWindow();
+    await win.show();
+    await win.setFocus();
+  } catch {
+    /* window APIs unavailable outside Tauri */
+  }
+}
+
+async function runFirstLaunchPass() {
+  if (!isFirstLaunch(localStorage)) return;
+
+  try {
+    const already = await isEnabled();
+    if (!already) await enable();
+  } catch {
+    /* Settings toggle is the recovery path; do not block first-run. */
+  }
+
+  if (isMac()) {
+    await showMainWindow();
+    $("onboarding").classList.remove("hidden");
+  }
+
+  markFirstLaunchDone(localStorage);
+}
+
 async function installPendingUpdate() {
   if (!pendingUpdate) return;
   const btn = document.getElementById("install-update") as HTMLButtonElement | null;
@@ -1502,6 +1566,12 @@ window.addEventListener("DOMContentLoaded", async () => {
   applyAgentName();
   ensureExpiryTicker();
   renderAll();
+  $("onboarding-dismiss").addEventListener("click", () => {
+    $("onboarding").classList.add("hidden");
+  });
+  $("autostart-toggle").addEventListener("change", () => {
+    void onAutostartToggle();
+  });
 
   document.querySelectorAll<HTMLButtonElement>(".nav-item").forEach((btn) => {
     btn.addEventListener("click", () => showPage(btn.dataset.page as Page));
@@ -1716,4 +1786,6 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   }
   void checkForUpdates(false);
+  await runFirstLaunchPass();
+  void refreshAutostartToggle();
 });

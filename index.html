@@ -8,6 +8,13 @@
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>
+    <div id="onboarding" class="onboarding hidden" role="status">
+      <p id="onboarding-copy">
+        HookDeploy Agent is running in your menu bar. Click the icon anytime to open this window.
+      </p>
+      <button id="onboarding-dismiss" type="button" class="ghost">Got it</button>
+    </div>
+
     <div id="offline" class="offline hidden" role="status" aria-live="polite">
       <div class="gate-card">
         <img
@@ -250,6 +257,29 @@
                     </div>
                     <div class="panel-foot">
                       <button id="settings-add-org" type="button">Add organization</button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section>
+                <h2>Startup</h2>
+                <p class="settings-lead">Open automatically when you sign in to this computer.</p>
+                <div class="panel-tray">
+                  <div class="panel-inner">
+                    <div class="panel-body settings-danger-row">
+                      <div class="min-w-0">
+                        <p class="settings-org-name">Launch at startup</p>
+                        <p class="settings-hint">
+                          Keeps this agent ready to receive webhooks after a restart.
+                        </p>
+                        <p id="autostart-status" class="settings-hint"></p>
+                      </div>
+                      <label class="toggle">
+                        <input id="autostart-toggle" type="checkbox" />
+                        <span class="toggle-ui" aria-hidden="true"></span>
+                        <span class="sr-only">Launch at startup</span>
+                      </label>
                     </div>
                   </div>
                 </div>
