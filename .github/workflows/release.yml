@@ -73,6 +73,18 @@ jobs:
             -o "../src-tauri/binaries/${{ matrix.sidecar_out }}" ./cmd/agent
           chmod +x "../src-tauri/binaries/${{ matrix.sidecar_out }}" || true
 
+      # SignTool must be able to write Authenticode into the PE. Read-only
+      # sidecars make Azure Trusted Signing exit 0-ish / verify as unsigned
+      # ("No signature found") — see tauri-apps/tauri#11778.
+      - name: Ensure Windows sidecar is writable for SignTool
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = "src-tauri/binaries/${{ matrix.sidecar_out }}"
+          if (-not (Test-Path $p)) { throw "missing sidecar: $p" }
+          attrib -R $p
+          Get-Item $p | Format-List FullName, Length, IsReadOnly, Attributes
+
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
@@ -140,10 +152,29 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          # String-form signCommand is split on ASCII spaces only — quotes are
+          # NOT respected (v2.tauri.app/reference/config CustomSignCommandConfig).
+          # "-d HookDeploy Agent" therefore becomes two args and SignTool ends up
+          # verifying a non-file token → "No signature found". Use object form.
           $cfg = Get-Content -Raw src-tauri/windows-sign-ci.json | ConvertFrom-Json
-          $cmd = "artifact-signing-cli -e $($cfg.endpoint) -a $($cfg.codeSigningAccountName) -c $($cfg.certificateProfileName) -d `"HookDeploy Agent`" %1"
-          $json = @{ bundle = @{ windows = @{ signCommand = $cmd } } } | ConvertTo-Json -Depth 6
-          Set-Content -Path src-tauri/windows-sign.ci.json -Value $json -Encoding utf8
+          $overlay = @{
+            bundle = @{
+              windows = @{
+                signCommand = @{
+                  cmd = "artifact-signing-cli"
+                  args = @(
+                    "-e", $cfg.endpoint.TrimEnd("/"),
+                    "-a", $cfg.codeSigningAccountName,
+                    "-c", $cfg.certificateProfileName,
+                    "-d", "HookDeploy Agent",
+                    "%1"
+                  )
+                }
+              }
+            }
+          }
+          $overlay | ConvertTo-Json -Depth 8 | Set-Content -Path src-tauri/windows-sign.ci.json -Encoding utf8
+          Get-Content src-tauri/windows-sign.ci.json
 
       - uses: tauri-apps/tauri-action@v1
         env:
@@ -166,7 +197,7 @@ jobs:
           releaseDraft: true
           prerelease: false
           uploadUpdaterJson: false
-          args: ${{ matrix.name == 'windows' && '--config src-tauri/windows-sign.ci.json' || matrix.args }}
+          args: ${{ matrix.name == 'windows' && '--verbose --config src-tauri/windows-sign.ci.json' || matrix.args }}
 
       # Always upload installers so workflow_dispatch test runs have a download.
       # tauri-action still attaches the same files to a GitHub Release when a
