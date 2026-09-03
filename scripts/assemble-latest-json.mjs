@@ -24,15 +24,34 @@ const headers = {
   "User-Agent": "hookdeploy-agent-release",
 };
 
-const res = await fetch(
-  `https://api.github.com/repos/${repo}/releases/tags/${tag}`,
-  { headers },
-);
-if (!res.ok) {
-  console.error("release lookup failed", res.status, await res.text());
+// GET /releases/tags/{tag} only returns *published* releases (GitHub docs:
+// "Get a published release with the specified tag"). Drafts 404 there.
+// GET /releases lists drafts when the token has push access (contents:write
+// GITHUB_TOKEN qualifies). Filter by tag_name so draft and published both work.
+async function findReleaseByTag(tagName) {
+  for (let page = 1; page <= 20; page++) {
+    const res = await fetch(
+      `https://api.github.com/repos/${repo}/releases?per_page=100&page=${page}`,
+      { headers },
+    );
+    if (!res.ok) {
+      console.error("release list failed", res.status, await res.text());
+      process.exit(1);
+    }
+    const batch = await res.json();
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    const hit = batch.find((r) => r.tag_name === tagName);
+    if (hit) return hit;
+    if (batch.length < 100) break;
+  }
+  console.error(`no release found with tag_name=${tagName} (checked drafts + published)`);
   process.exit(1);
 }
-const release = await res.json();
+
+const release = await findReleaseByTag(tag);
+console.log(
+  `using release id=${release.id} tag=${release.tag_name} draft=${release.draft}`,
+);
 const assets = release.assets || [];
 
 function findAsset(...preds) {
