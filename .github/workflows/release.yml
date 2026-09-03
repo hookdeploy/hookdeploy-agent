@@ -138,13 +138,10 @@ jobs:
 
       - name: Write Windows signCommand overlay
         if: runner.os == 'Windows'
-        env:
-          ATS_ENDPOINT: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
-          ATS_ACCOUNT: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
-          ATS_PROFILE: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
         shell: pwsh
         run: |
-          $cmd = "artifact-signing-cli -e $env:ATS_ENDPOINT -a $env:ATS_ACCOUNT -c $env:ATS_PROFILE -d `"HookDeploy Agent`" %1"
+          $cfg = Get-Content -Raw src-tauri/windows-sign-ci.json | ConvertFrom-Json
+          $cmd = "artifact-signing-cli -e $($cfg.endpoint) -a $($cfg.codeSigningAccountName) -c $($cfg.certificateProfileName) -d `"HookDeploy Agent`" %1"
           $json = @{ bundle = @{ windows = @{ signCommand = $cmd } } } | ConvertTo-Json -Depth 6
           Set-Content -Path src-tauri/windows-sign.ci.json -Value $json -Encoding utf8
 
