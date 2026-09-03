@@ -58,13 +58,31 @@ function findAsset(...preds) {
   const a = assets.find((x) => preds.every((p) => p(x.name)));
   if (!a) return null;
   const sig = assets.find((x) => x.name === `${a.name}.sig`);
-  return { url: a.browser_download_url, sigUrl: sig?.browser_download_url, name: a.name };
+  // Prefer tag download URLs so latest.json stays valid after a draft is
+  // published (browser_download_url uses untagged-* while draft).
+  const url = `https://github.com/${repo}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(a.name)}`;
+  return {
+    url,
+    name: a.name,
+    sigId: sig?.id,
+  };
 }
 
-async function sigBody(url) {
-  if (!url) throw new Error("missing .sig asset");
-  const s = await fetch(url, { headers });
-  if (!s.ok) throw new Error(`sig fetch ${s.status} ${url}`);
+// Draft browser_download_url 404s until publish. Download .sig bytes via the
+// Releases assets API (Accept: application/octet-stream) instead.
+async function sigBody(assetId) {
+  if (!assetId) throw new Error("missing .sig asset");
+  const s = await fetch(
+    `https://api.github.com/repos/${repo}/releases/assets/${assetId}`,
+    {
+      headers: {
+        ...headers,
+        Accept: "application/octet-stream",
+      },
+      redirect: "follow",
+    },
+  );
+  if (!s.ok) throw new Error(`sig fetch ${s.status} asset_id=${assetId}`);
   return (await s.text()).trim();
 }
 
@@ -100,15 +118,15 @@ if (missing.length) {
 const platforms = {
   "windows-x86_64": {
     url: windows.url,
-    signature: await sigBody(windows.sigUrl),
+    signature: await sigBody(windows.sigId),
   },
   "darwin-aarch64": {
     url: darwinArm.url,
-    signature: await sigBody(darwinArm.sigUrl),
+    signature: await sigBody(darwinArm.sigId),
   },
   "darwin-x86_64": {
     url: darwinX64.url,
-    signature: await sigBody(darwinX64.sigUrl),
+    signature: await sigBody(darwinX64.sigId),
   },
 };
 
