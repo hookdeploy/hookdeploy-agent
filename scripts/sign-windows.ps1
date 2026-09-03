@@ -23,29 +23,53 @@ $libPath = Join-Path $configDir "lib\bin\x64\Azure.CodeSigning.Dlib.dll"
 $metaPath = Join-Path $configDir "metadata.json"
 $signtool = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
 
-if (-not (Test-Path -LiteralPath $libPath)) {
-  Write-Host "sign-windows: bootstrapping Artifact Signing dlib via artifact-signing-cli"
-  # Triggers download+extract of Microsoft.ArtifactSigning.Client (then exits on our throwaway).
-  # Use a tiny copy of ourselves as the file arg so the CLI gets past arg parse.
-  $probe = Join-Path $env:TEMP "hd-sign-probe.exe"
-  Copy-Item -LiteralPath $full -Destination $probe -Force
-  try {
-    & artifact-signing-cli -e $endpoint -a $cfg.codeSigningAccountName -c $cfg.certificateProfileName $probe 2>&1 | Out-Host
-  } catch {
-    # First run may fail login/sign; we only need the dlib on disk.
-  }
-  if (-not (Test-Path -LiteralPath $libPath)) {
-    throw "sign-windows: dlib missing at $libPath after bootstrap"
-  }
+function Write-Utf8NoBom([string]$Path, [string]$Content) {
+  $enc = New-Object System.Text.UTF8Encoding $false
+  [System.IO.File]::WriteAllText($Path, $Content, $enc)
 }
+
+function Ensure-ArtifactSigningDlib {
+  if (Test-Path -LiteralPath $libPath) { return }
+
+  Write-Host "sign-windows: downloading Microsoft.ArtifactSigning.Client nupkg"
+  New-Item -ItemType Directory -Force -Path $configDir | Out-Null
+  $tmp = Join-Path $env:TEMP ("acs-client-" + [guid]::NewGuid().ToString("n"))
+  New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+  $nupkg = Join-Path $tmp "Microsoft.ArtifactSigning.Client.nupkg"
+  # nuget.org package download (latest stable redirects to nupkg)
+  Invoke-WebRequest `
+    -Uri "https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/index.json" `
+    -OutFile (Join-Path $tmp "index.json")
+  $index = Get-Content -Raw (Join-Path $tmp "index.json") | ConvertFrom-Json
+  $ver = $index.versions[-1]
+  Write-Host "sign-windows: ArtifactSigning.Client $ver"
+  Invoke-WebRequest `
+    -Uri "https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/$ver/microsoft.artifactsigning.client.$ver.nupkg" `
+    -OutFile $nupkg
+  # Expand-Archive requires a .zip extension on Windows PowerShell 5.1.
+  $zip = Join-Path $tmp "client.zip"
+  Copy-Item -LiteralPath $nupkg -Destination $zip -Force
+  $extracted = Join-Path $tmp "extracted"
+  Expand-Archive -LiteralPath $zip -DestinationPath $extracted -Force
+  $found = Get-ChildItem -Path $extracted -Recurse -Filter "Azure.CodeSigning.Dlib.dll" |
+    Where-Object { $_.FullName -match '\\x64\\' } |
+    Select-Object -First 1
+  if (-not $found) { throw "sign-windows: Azure.CodeSigning.Dlib.dll (x64) not found in nupkg $ver" }
+  $libDir = Split-Path $libPath -Parent
+  New-Item -ItemType Directory -Force -Path $libDir | Out-Null
+  # Copy sibling deps next to the dlib (same folder as in the nupkg).
+  Copy-Item -Force (Join-Path $found.DirectoryName "*") $libDir
+}
+
+Ensure-ArtifactSigningDlib
 
 if (-not (Test-Path -LiteralPath $signtool)) {
   throw "sign-windows: signtool missing at $signtool"
 }
 
-# Force DefaultAzureCredential onto EnvironmentCredential (AZURE_CLIENT_ID /
-# SECRET / TENANT_ID already set by the workflow). Avoids interactive and
-# stale VS/CLI credential chains that surface as SignerSign/0x80004005.
+# Prefer EnvironmentCredential (AZURE_CLIENT_ID / SECRET / TENANT_ID from the
+# workflow). A 403 here means the SP authenticated but lacks Certificate Profile
+# Signer on the Trusted Signing account/profile — not a Tauri/%1 bug.
 $meta = [ordered]@{
   Endpoint                 = $endpoint
   CodeSigningAccountName   = $cfg.codeSigningAccountName
@@ -63,9 +87,10 @@ $meta = [ordered]@{
   )
 }
 New-Item -ItemType Directory -Force -Path $configDir | Out-Null
-($meta | ConvertTo-Json -Depth 5) | Set-Content -Path $metaPath -Encoding utf8
+Write-Utf8NoBom $metaPath (($meta | ConvertTo-Json -Depth 5) + "`n")
 Write-Host "sign-windows: metadata:"
 Get-Content $metaPath
+Write-Host "sign-windows: AZURE_CLIENT_ID set=$([bool]$env:AZURE_CLIENT_ID) TENANT set=$([bool]$env:AZURE_TENANT_ID) SECRET set=$([bool]$env:AZURE_CLIENT_SECRET)"
 Write-Host "sign-windows: signing $full"
 
 & $signtool sign `
