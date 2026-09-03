@@ -1,4 +1,3 @@
 # Re-attribute Cursor co-author trailers still reachable via refs/pull/*/head
 # (GitHub keeps those permanently). Display-time only; does not rewrite history.
-Michael Bernstein <michael@hookdeploy.dev> <cursoragent@cursor.com>
-Michael Bernstein <michael@hookdeploy.dev> Cursor <cursoragent@cursor.com>
+Michael Bernstein <michael@hookdeploy.dev>
