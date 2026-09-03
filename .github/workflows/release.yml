@@ -144,9 +144,47 @@ jobs:
           echo "${{ secrets.APPLE_API_KEY_P8 }}" > AuthKey.p8
           echo "APPLE_API_KEY_PATH=${PWD}/AuthKey.p8" >> "$GITHUB_ENV"
 
-      - name: Install Azure Trusted Signing CLI
+      # Fail fast on Azure IAM/config (403) before the long Rust build.
+      # SignTool's SignerSign/0x80004005 usually masks this same Forbidden.
+      - name: Preflight Azure Trusted Signing access
         if: runner.os == 'Windows'
-        run: cargo install artifact-signing-cli --locked
+        shell: pwsh
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          $cfg = Get-Content -Raw src-tauri/windows-sign-ci.json | ConvertFrom-Json
+          $endpoint = $cfg.endpoint.TrimEnd('/')
+          Write-Host "preflight: endpoint=$endpoint account=$($cfg.codeSigningAccountName) profile=$($cfg.certificateProfileName)"
+          Write-Host "preflight: client_id=$env:AZURE_CLIENT_ID"
+          az login --service-principal `
+            -u $env:AZURE_CLIENT_ID `
+            -p $env:AZURE_CLIENT_SECRET `
+            --tenant $env:AZURE_TENANT_ID `
+            --allow-no-subscriptions | Out-Host
+          $token = az account get-access-token --resource https://codesigning.azure.net --query accessToken -o tsv
+          if (-not $token) { throw "preflight: failed to get codesigning.azure.net token" }
+          $uri = "$endpoint/codesigningaccounts/$($cfg.codeSigningAccountName)/certificateprofiles/$($cfg.certificateProfileName)?api-version=2024-02-15-preview"
+          Write-Host "preflight: GET $uri"
+          try {
+            $resp = Invoke-WebRequest -Uri $uri -Headers @{ Authorization = "Bearer $token" } -UseBasicParsing
+            Write-Host "preflight: profile GET status=$($resp.StatusCode)"
+            Write-Host $resp.Content
+          } catch {
+            $code = $_.Exception.Response.StatusCode.value__
+            Write-Host "preflight: profile GET failed status=$code"
+            Write-Host $_
+            throw @"
+Azure Trusted Signing preflight failed (HTTP $code).
+The App Registration can authenticate, but cannot access account '$($cfg.codeSigningAccountName)' / profile '$($cfg.certificateProfileName)' at $endpoint.
+Fix in Azure Portal on the Trusted Signing account:
+  1. IAM → assign 'Trusted Signing Certificate Profile Signer' to this App Registration's service principal (search by app name / client id $env:AZURE_CLIENT_ID)
+  2. Confirm account region matches endpoint ($endpoint)
+  3. Confirm account + profile names match exactly (case-sensitive) and profile Status is Active
+See: https://learn.microsoft.com/en-us/azure/trusted-signing/how-to-signing-integrations
+"@
+          }
 
       - name: Write Windows signCommand overlay
         if: runner.os == 'Windows'
@@ -187,10 +225,6 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          # artifact-signing-cli shells out to az login without
-          # --allow-no-subscriptions; Trusted Signing SPs often have no ARM
-          # subscription and fail with "No subscriptions found".
-          AZURE_CLI_PATH: ${{ github.workspace }}\scripts\az-allow-no-subscriptions.cmd
         with:
           tagName: ${{ github.ref_name }}
           releaseName: HookDeploy Agent ${{ github.ref_name }}
