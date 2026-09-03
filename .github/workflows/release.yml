@@ -190,6 +190,10 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          # artifact-signing-cli shells out to az login without
+          # --allow-no-subscriptions; Trusted Signing SPs often have no ARM
+          # subscription and fail with "No subscriptions found".
+          AZURE_CLI_PATH: ${{ github.workspace }}\scripts\az-allow-no-subscriptions.cmd
         with:
           tagName: ${{ github.ref_name }}
           releaseName: HookDeploy Agent ${{ github.ref_name }}
