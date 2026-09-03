@@ -127,14 +127,12 @@ pub fn run() {
             set_update_available
         ])
         .setup(|app| {
-            // Menu-bar extra: hide the Dock icon. macOS-only API; Windows has no
-            // equivalent and this block is compiled out there.
-            // https://docs.rs/tauri/latest/tauri/struct.AppHandle.html#method.set_activation_policy
-            #[cfg(target_os = "macos")]
-            let _ = app
-                .handle()
-                .set_activation_policy(tauri::ActivationPolicy::Accessory);
+            // Status item first, then Accessory. Installed builds also get
+            // LSUIElement via Info.plist; this call covers `tauri dev`. Do not
+            // discard the policy Result via AppHandle — use App::set_activation_policy.
             tray::install(app.handle())?;
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             network::start(app.handle().clone());
             Ok(())
         })
@@ -146,4 +144,37 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running HookDeploy Agent");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn setup_installs_tray_before_accessory_and_does_not_swallow_policy() {
+        let src = include_str!("lib.rs");
+        let setup = src
+            .split(".setup(|app| {")
+            .nth(1)
+            .expect("setup closure")
+            .split(".on_window_event")
+            .next()
+            .unwrap();
+        let tray_pos = setup.find("tray::install").expect("tray::install in setup");
+        let policy_pos = setup
+            .find("app.set_activation_policy")
+            .expect("app.set_activation_policy in setup");
+        assert!(
+            tray_pos < policy_pos,
+            "tray must be installed before ActivationPolicy::Accessory"
+        );
+        assert!(
+            !setup.contains("let _ = app.handle()")
+                && !setup.contains("let _ = app\n")
+                && !setup.contains("let _ = app\r"),
+            "activation policy must not be discarded with let _ = on AppHandle"
+        );
+        assert!(
+            setup.contains("app.set_activation_policy"),
+            "use App::set_activation_policy, not a swallowed AppHandle Result"
+        );
+    }
 }
