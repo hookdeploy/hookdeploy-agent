@@ -16,8 +16,9 @@ if (-not (Test-Path -LiteralPath $full)) {
 }
 attrib -R $full 2>$null | Out-Null
 
-$home = $env:USERPROFILE
-$configDir = Join-Path $home ".artifact-signing-cli"
+# Do not use $HOME — it is a read-only automatic variable in PowerShell.
+$userHome = $env:USERPROFILE
+$configDir = Join-Path $userHome ".artifact-signing-cli"
 $libPath = Join-Path $configDir "lib\bin\x64\Azure.CodeSigning.Dlib.dll"
 $metaPath = Join-Path $configDir "metadata.json"
 $signtool = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
