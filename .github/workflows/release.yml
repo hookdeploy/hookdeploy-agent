@@ -175,15 +175,7 @@ jobs:
             $code = $_.Exception.Response.StatusCode.value__
             Write-Host "preflight: profile GET failed status=$code"
             Write-Host $_
-            throw @"
-Azure Trusted Signing preflight failed (HTTP $code).
-The App Registration can authenticate, but cannot access account '$($cfg.codeSigningAccountName)' / profile '$($cfg.certificateProfileName)' at $endpoint.
-Fix in Azure Portal on the Trusted Signing account:
-  1. IAM → assign 'Trusted Signing Certificate Profile Signer' to this App Registration's service principal (search by app name / client id $env:AZURE_CLIENT_ID)
-  2. Confirm account region matches endpoint ($endpoint)
-  3. Confirm account + profile names match exactly (case-sensitive) and profile Status is Active
-See: https://learn.microsoft.com/en-us/azure/trusted-signing/how-to-signing-integrations
-"@
+            throw "Azure Trusted Signing preflight failed (HTTP $code). SP authenticated but cannot access account '$($cfg.codeSigningAccountName)' / profile '$($cfg.certificateProfileName)' at $endpoint. Assign 'Trusted Signing Certificate Profile Signer' to client id $env:AZURE_CLIENT_ID on that account; confirm region, exact names, and Active profile."
           }
 
       - name: Write Windows signCommand overlay
