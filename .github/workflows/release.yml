@@ -152,21 +152,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # String-form signCommand is split on ASCII spaces only — quotes are
-          # NOT respected (v2.tauri.app/reference/config CustomSignCommandConfig).
-          # "-d HookDeploy Agent" therefore becomes two args and SignTool ends up
-          # verifying a non-file token → "No signature found". Use object form.
-          $cfg = Get-Content -Raw src-tauri/windows-sign-ci.json | ConvertFrom-Json
+          # Object-form signCommand (quotes/spaces safe). Invoke our wrapper so
+          # %1 is resolved to an absolute path before SignTool/dlib sees it.
+          $script = Join-Path $env:GITHUB_WORKSPACE "scripts\sign-windows.ps1"
           $overlay = @{
             bundle = @{
               windows = @{
                 signCommand = @{
-                  cmd = "artifact-signing-cli"
+                  cmd = "powershell"
                   args = @(
-                    "-e", $cfg.endpoint.TrimEnd("/"),
-                    "-a", $cfg.codeSigningAccountName,
-                    "-c", $cfg.certificateProfileName,
-                    "-d", "HookDeploy Agent",
+                    "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", $script,
                     "%1"
                   )
                 }
