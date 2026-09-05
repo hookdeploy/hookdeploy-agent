@@ -1,0 +1,11 @@
+HookDeploy Agent - End User License Agreement
+
+This software ("HookDeploy Agent") is provided by SnapStack Technologies Inc. ("SnapStack"). By installing or using this software, you agree to the following:
+
+License. HookDeploy Agent is licensed, not sold, under the Business Source License 1.1. The full license text is included with this software and available at github.com/hookdeploy/hookdeploy-agent/blob/main/LICENSE. In summary: you may use, modify, and self-host this software for any purpose, including internal business use, except offering it to third parties as a competing hosted webhook service. This restriction converts to the Apache License, Version 2.0 on August 28, 2030.
+
+No warranty. To the maximum extent permitted by applicable law, HookDeploy Agent is provided "as is," without warranty of any kind, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, and non-infringement.
+
+Limitation of liability. To the maximum extent permitted by applicable law, in no event shall SnapStack Technologies Inc. be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of data, revenue, or profits, arising out of or related to your use of this software, even if advised of the possibility of such damages. SnapStack's total liability for any claim arising from this software shall not exceed the amount you paid, if any, for the software giving rise to the claim.
+
+Questions. For licensing questions, contact support@hookdeploy.dev.
