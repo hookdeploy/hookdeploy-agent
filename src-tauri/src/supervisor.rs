@@ -418,7 +418,9 @@ async fn watch_connect(
                     break;
                 }
                 g.connect = None;
-                if g.status.phase != ConnectPhase::Revoked {
+                if g.status.phase != ConnectPhase::Revoked
+                    && g.status.phase != ConnectPhase::ClockSkew
+                {
                     g.status.phase = ConnectPhase::Disconnected;
                     g.status.detail = Some("connect process exited".into());
                 }
@@ -442,7 +444,7 @@ pub fn stop_connect(app: &AppHandle) -> Result<(), String> {
     if let Some(child) = g.connect.take() {
         child.kill().map_err(|e| e.to_string())?;
     }
-    if g.status.phase != ConnectPhase::Revoked {
+    if g.status.phase != ConnectPhase::Revoked && g.status.phase != ConnectPhase::ClockSkew {
         g.status.phase = ConnectPhase::Disconnected;
         g.status.detail = None;
     }

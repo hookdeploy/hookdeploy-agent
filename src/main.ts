@@ -33,7 +33,7 @@ import {
   splitEnrollCode,
 } from "./enrollOtp";
 
-type Phase = "disconnected" | "connecting" | "connected" | "reconnecting" | "revoked";
+type Phase = "disconnected" | "connecting" | "connected" | "reconnecting" | "revoked" | "clock_skew";
 type Page = "dashboard" | "endpoints" | "taps" | "settings";
 
 interface ConnectStatus {
@@ -227,7 +227,7 @@ function connectionLive(phase: Phase): boolean {
 function applyStatus(s: ConnectStatus) {
   connectPhase = s.phase;
   $("status-dot").className = `dot ${s.phase}`;
-  $("status-phase").textContent = s.phase[0].toUpperCase() + s.phase.slice(1);
+  $("status-phase").textContent = formatPhaseLabel(s.phase);
   const live = connectionLive(s.phase);
   $("conn-opt-connected").querySelector(".conn-check")?.classList.toggle("hidden", !live);
   $("conn-opt-disconnected").querySelector(".conn-check")?.classList.toggle("hidden", live);
@@ -244,7 +244,15 @@ function applyStatus(s: ConnectStatus) {
     relay.removeAttribute("title");
     relay.classList.add("hidden");
   }
+  if (s.phase === "clock_skew" && s.detail) {
+    showError(s.detail);
+  }
   applyAgentName();
+}
+
+function formatPhaseLabel(phase: string): string {
+  if (phase === "clock_skew") return "Clock skew";
+  return phase[0].toUpperCase() + phase.slice(1);
 }
 
 function closeConnMenu() {

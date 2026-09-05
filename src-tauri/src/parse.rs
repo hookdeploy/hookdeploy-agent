@@ -17,6 +17,8 @@ pub enum ConnectPhase {
     Connected,
     Reconnecting,
     Revoked,
+    /// Local clock skew vs enrollment worker Date header; credentials kept.
+    ClockSkew,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,10 +50,24 @@ impl ConnectStatus {
         const REVOKED_USER: &str =
             "this agent was revoked and can no longer connect";
         const REVOKED_ORG: &str = "this organization's credentials were removed";
+        const DEAD_CRED: &str =
+            "credentials are no longer valid and can no longer connect";
+        const DEAD_CRED_ORG: &str =
+            "credentials are no longer valid and were removed";
+        const CLOCK_SKEW: &str = "system clock appears to be off";
         const DRAINING: &str = "this relay is draining";
 
-        if line.contains(REVOKED_USER) || line.contains(REVOKED_ORG) {
+        if line.contains(REVOKED_USER)
+            || line.contains(REVOKED_ORG)
+            || line.contains(DEAD_CRED)
+            || line.contains(DEAD_CRED_ORG)
+        {
             self.phase = ConnectPhase::Revoked;
+            self.detail = Some(line.to_string());
+            return;
+        }
+        if line.contains(CLOCK_SKEW) {
+            self.phase = ConnectPhase::ClockSkew;
             self.detail = Some(line.to_string());
             return;
         }
@@ -77,7 +93,7 @@ impl ConnectStatus {
         }
         if line.contains("heartbeat dropped") || line.contains("disconnected relay=")
         {
-            if self.phase != ConnectPhase::Revoked {
+            if self.phase != ConnectPhase::Revoked && self.phase != ConnectPhase::ClockSkew {
                 self.phase = ConnectPhase::Reconnecting;
             }
             self.detail = Some(line.to_string());
@@ -603,6 +619,17 @@ pub fn is_code_prompt(line: &str) -> bool {
 const ENROLL_FAIL_GENERIC: &str = "Enrollment failed. Check your connection and try again.";
 const ENROLL_FAIL_MAX: usize = 160;
 
+pub const ENROLL_FAIL_TOKEN_CONSUMED: &str =
+    "This enrollment token was already used. Create a new one.";
+pub const ENROLL_FAIL_TOKEN_EXPIRED: &str =
+    "This enrollment code or token expired. Start again.";
+pub const ENROLL_FAIL_TOKEN_INVALID: &str = "That enrollment token is invalid.";
+pub const ENROLL_FAIL_RATE_LIMITED: &str =
+    "Too many attempts. Wait a minute and try again.";
+pub const ENROLL_FAIL_DENIED: &str = "Enrollment was denied. Start again.";
+pub const ENROLL_FAIL_DEAD_CREDENTIAL: &str =
+    "This agent's credentials are no longer valid. Re-enroll to continue.";
+
 pub(crate) fn enroll_line_looks_leaky(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     lower.contains("stored cert")
@@ -619,12 +646,50 @@ pub(crate) fn enroll_line_looks_leaky(line: &str) -> bool {
         || lower.contains("/appdata/")
 }
 
-/// Last allowlisted enroll-failure line, or a fixed generic message.
-/// Never returns the raw stdout/stderr buffer.
+/// Map known agent/worker phrases to fixed safe copy. Never returns raw input.
+/// Runs before the leak filter so token-related lines can classify without
+/// leaking the original text into the UI.
+pub(crate) fn classify_enroll_failure_phrase(line: &str) -> Option<&'static str> {
+    let lower = line.to_ascii_lowercase();
+    // Renewal/dead-credential phrases before generic "token expired" (substring overlap).
+    if lower.contains("renewal token expired")
+        || lower.contains("renewal token revoked")
+        || lower.contains("renewal token reused")
+        || lower.contains("invalid renewal token")
+        || lower.contains("agent not found or revoked")
+    {
+        return Some(ENROLL_FAIL_DEAD_CREDENTIAL);
+    }
+    if lower.contains("token already consumed") {
+        return Some(ENROLL_FAIL_TOKEN_CONSUMED);
+    }
+    if lower.contains("invalid token") {
+        return Some(ENROLL_FAIL_TOKEN_INVALID);
+    }
+    if lower.contains("token expired") || lower.contains("enrollment expired") {
+        return Some(ENROLL_FAIL_TOKEN_EXPIRED);
+    }
+    if lower.contains("enrollment denied") {
+        return Some(ENROLL_FAIL_DENIED);
+    }
+    if lower.contains("rate_limited") || lower.contains("rate limit exceeded") {
+        return Some(ENROLL_FAIL_RATE_LIMITED);
+    }
+    None
+}
+
+/// Last classified or allowlisted enroll-failure line, or a fixed generic message.
+/// Never returns the raw stdout/stderr buffer for leaky lines.
 pub fn summarize_enroll_failure(buf: &str, _exit_code: i32) -> String {
     for raw in buf.lines().rev() {
         let line = strip_agent_prefix(raw);
-        if line.is_empty() || is_code_prompt(line) || enroll_line_looks_leaky(line) {
+        if line.is_empty() || is_code_prompt(line) {
+            continue;
+        }
+        if let Some(classified) = classify_enroll_failure_phrase(line) {
+            return classified.to_string();
+        }
+        if enroll_line_looks_leaky(line) {
             continue;
         }
         let lower = line.to_ascii_lowercase();
@@ -821,6 +886,23 @@ tap-live
     }
 
     #[test]
+    fn connect_status_maps_dead_credential_and_clock_skew() {
+        let mut s = ConnectStatus::default();
+        s.apply_line(
+            "agent: this agent's credentials are no longer valid and can no longer connect. Local credentials were removed. Run `agent enroll`, then `agent connect`.",
+        );
+        assert_eq!(s.phase, ConnectPhase::Revoked);
+
+        let mut skew = ConnectStatus::default();
+        skew.apply_line(
+            "agent: your system clock appears to be off by more than 5 minutes relative to Hookdeploy. Check your date and time settings, then run `agent connect` again.",
+        );
+        assert_eq!(skew.phase, ConnectPhase::ClockSkew);
+        skew.apply_line("agent: disconnected relay=x; reconnecting");
+        assert_eq!(skew.phase, ConnectPhase::ClockSkew);
+    }
+
+    #[test]
     fn enroll_helpers() {
         let block = "Open this URL to enroll this agent:\n  https://app.hookdeploy.dev/app/cli-auth/s1\n";
         assert_eq!(
@@ -873,6 +955,92 @@ tap-live
             summarize_enroll_failure("wrong code — try again\n", 1),
             "wrong code — try again"
         );
+    }
+
+    /// Pre-launch resilience: distinct enroll failure copy (B1 classifier).
+    #[test]
+    fn enroll_failure_resilience_distinctions() {
+        // Network-ish lines: preserved.
+        assert_eq!(
+            summarize_enroll_failure("connection refused\n", 1),
+            "connection refused"
+        );
+        assert_eq!(
+            summarize_enroll_failure("host unreachable\n", 1),
+            "host unreachable"
+        );
+
+        assert_eq!(
+            summarize_enroll_failure("token already consumed\n", 1),
+            ENROLL_FAIL_TOKEN_CONSUMED
+        );
+        assert_eq!(
+            summarize_enroll_failure("token expired\n", 1),
+            ENROLL_FAIL_TOKEN_EXPIRED
+        );
+        assert_eq!(
+            summarize_enroll_failure("invalid token\n", 1),
+            ENROLL_FAIL_TOKEN_INVALID
+        );
+        assert_eq!(
+            summarize_enroll_failure("enrollment expired\n", 1),
+            ENROLL_FAIL_TOKEN_EXPIRED
+        );
+        assert_eq!(
+            summarize_enroll_failure("enrollment denied\n", 1),
+            ENROLL_FAIL_DENIED
+        );
+        assert_eq!(
+            summarize_enroll_failure("placement rate limit exceeded (20/minute)\n", 1),
+            ENROLL_FAIL_RATE_LIMITED
+        );
+        assert_eq!(
+            summarize_enroll_failure("rate_limited\n", 1),
+            ENROLL_FAIL_RATE_LIMITED
+        );
+        assert_eq!(
+            summarize_enroll_failure("renewal token expired\n", 1),
+            ENROLL_FAIL_DEAD_CREDENTIAL
+        );
+        assert_eq!(
+            summarize_enroll_failure("renewal token revoked\n", 1),
+            ENROLL_FAIL_DEAD_CREDENTIAL
+        );
+        assert_eq!(
+            summarize_enroll_failure("renewal token reused\n", 1),
+            ENROLL_FAIL_DEAD_CREDENTIAL
+        );
+        assert_eq!(
+            summarize_enroll_failure("invalid renewal token\n", 1),
+            ENROLL_FAIL_DEAD_CREDENTIAL
+        );
+        assert_eq!(
+            summarize_enroll_failure("agent not found or revoked\n", 1),
+            ENROLL_FAIL_DEAD_CREDENTIAL
+        );
+
+        // Empty / unmatched → generic.
+        assert_eq!(summarize_enroll_failure("", -1), ENROLL_FAIL_GENERIC);
+        assert_eq!(
+            summarize_enroll_failure("enrollment expired\n", 42),
+            ENROLL_FAIL_TOKEN_EXPIRED
+        );
+
+        // Leak filter still blocks raw paths/PEM; classifier fixed copy only.
+        assert_eq!(
+            summarize_enroll_failure(
+                "agent: stored cert in C:\\Users\\x\\certs org=Acme CN=agent-1 OU=org-1\n",
+                1,
+            ),
+            ENROLL_FAIL_GENERIC
+        );
+        let classified = summarize_enroll_failure(
+            "agent: token already consumed\nagent: stored cert in C:\\x\n",
+            1,
+        );
+        assert_eq!(classified, ENROLL_FAIL_TOKEN_CONSUMED);
+        assert!(!classified.contains("stored cert"));
+        assert!(!classified.contains("C:\\"));
     }
 
     #[test]

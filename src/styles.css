@@ -677,6 +677,9 @@ button.agent-rename:hover:not(:disabled) {
 .dot.revoked {
   background: var(--danger);
 }
+.dot.clock_skew {
+  background: var(--warning);
+}
 
 .pages {
   flex: 1;

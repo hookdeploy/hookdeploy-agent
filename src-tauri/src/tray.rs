@@ -246,6 +246,7 @@ pub fn status_label(status: &ConnectStatus) -> String {
         ConnectPhase::Reconnecting => "Reconnecting".into(),
         ConnectPhase::Connecting => "Connecting".into(),
         ConnectPhase::Revoked => "Revoked".into(),
+        ConnectPhase::ClockSkew => "Clock skew".into(),
         ConnectPhase::Disconnected => "Disconnected".into(),
     }
 }
@@ -267,7 +268,7 @@ pub fn connection_toggle(phase: ConnectPhase) -> (ConnectionToggle, bool) {
         ConnectPhase::Connected | ConnectPhase::Connecting | ConnectPhase::Reconnecting => {
             (ConnectionToggle::Disconnect, true)
         }
-        ConnectPhase::Disconnected => (ConnectionToggle::Connect, true),
+        ConnectPhase::Disconnected | ConnectPhase::ClockSkew => (ConnectionToggle::Connect, true),
         ConnectPhase::Revoked => (ConnectionToggle::Connect, false),
     }
 }
@@ -363,6 +364,7 @@ mod tests {
             ConnectPhase::Connected,
             ConnectPhase::Reconnecting,
             ConnectPhase::Revoked,
+            ConnectPhase::ClockSkew,
         ] {
             let mut status = ConnectStatus::default();
             status.phase = phase;
