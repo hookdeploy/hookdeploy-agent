@@ -119,6 +119,6 @@ Questions about licensing: **support@hookdeploy.dev**
 
 ## Support
 
-- Docs: [docs.hookdeploy.dev](https://docs.hookdeploy.dev)
+- Docs: [Agent & CLI](https://hookdeploy.dev/docs/agent-cli/overview) · [Install Desktop Agent](https://hookdeploy.dev/docs/agent-cli/install-desktop)
 - Dashboard: [app.hookdeploy.dev](https://app.hookdeploy.dev)
 - Email: support@hookdeploy.dev
