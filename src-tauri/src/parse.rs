@@ -621,6 +621,8 @@ const ENROLL_FAIL_MAX: usize = 160;
 
 pub const ENROLL_FAIL_TOKEN_CONSUMED: &str =
     "This enrollment token was already used. Create a new one.";
+pub const ENROLL_FAIL_ALREADY_COMPLETED: &str =
+    "This enrollment already finished. The original agent is enrolled. Check the dashboard; don't start a new one.";
 pub const ENROLL_FAIL_TOKEN_EXPIRED: &str =
     "This enrollment code or token expired. Start again.";
 pub const ENROLL_FAIL_TOKEN_INVALID: &str = "That enrollment token is invalid.";
@@ -665,6 +667,10 @@ pub(crate) fn classify_enroll_failure_phrase(line: &str) -> Option<&'static str>
     }
     if lower.contains("invalid token") {
         return Some(ENROLL_FAIL_TOKEN_INVALID);
+    }
+    // Before "enrollment expired" — the CLI string is "enrollment already completed".
+    if lower.contains("enrollment already completed") {
+        return Some(ENROLL_FAIL_ALREADY_COMPLETED);
     }
     if lower.contains("token expired") || lower.contains("enrollment expired") {
         return Some(ENROLL_FAIL_TOKEN_EXPIRED);
@@ -985,6 +991,22 @@ tap-live
         assert_eq!(
             summarize_enroll_failure("enrollment expired\n", 1),
             ENROLL_FAIL_TOKEN_EXPIRED
+        );
+        assert_eq!(
+            summarize_enroll_failure("enrollment already completed\n", 1),
+            ENROLL_FAIL_ALREADY_COMPLETED
+        );
+        assert_ne!(
+            summarize_enroll_failure("enrollment already completed\n", 1),
+            ENROLL_FAIL_TOKEN_EXPIRED
+        );
+        assert_ne!(
+            summarize_enroll_failure("enrollment already completed\n", 1),
+            ENROLL_FAIL_TOKEN_CONSUMED
+        );
+        assert_eq!(
+            summarize_enroll_failure("agent: enrollment already completed\n", 1),
+            ENROLL_FAIL_ALREADY_COMPLETED
         );
         assert_eq!(
             summarize_enroll_failure("enrollment denied\n", 1),
