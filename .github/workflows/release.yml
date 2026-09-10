@@ -57,6 +57,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: hookdeploy/hookdeployed
+          ref: v0.1.2
           path: hookdeployed-src
 
       - uses: actions/setup-go@v5
@@ -69,7 +70,7 @@ jobs:
         run: |
           mkdir -p ../src-tauri/binaries
           CGO_ENABLED=0 GOOS=${{ matrix.sidecar_goos }} GOARCH=${{ matrix.sidecar_goarch }} \
-            go build -trimpath -ldflags="-s -w" \
+            go build -trimpath -ldflags="-s -w -X github.com/hookdeploy/hookdeployed/internal/version.Version=0.1.2" \
             -o "../src-tauri/binaries/${{ matrix.sidecar_out }}" ./cmd/agent
           chmod +x "../src-tauri/binaries/${{ matrix.sidecar_out }}" || true
 
