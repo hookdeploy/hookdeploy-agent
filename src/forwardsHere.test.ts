@@ -1,7 +1,15 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { destForwardsHere, forwardsHere } from "./forwardsHere";
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const main = readFileSync(join(root, "src/main.ts"), "utf8");
 
 const current = "agent-live";
 const leftover = "agent-from-last-enrollment";
+const orgA = "agent-org-a";
+const orgB = "agent-org-b";
 
 const cases: Array<[string, boolean, () => boolean]> = [
   ["null dest never matches", false, () => destForwardsHere(null, current)],
@@ -14,6 +22,27 @@ const cases: Array<[string, boolean, () => boolean]> = [
     forwardsHere([{ agent_id: null }, { agent_id: leftover }], current)],
   ["endpoint: only exact current id → here", true, () =>
     forwardsHere([{ agent_id: null }, { agent_id: current }], current)],
+  [
+    "org switch clears stale forwards-here indicator",
+    true,
+    () => forwardsHere([{ agent_id: orgA }], orgA) && !forwardsHere([{ agent_id: orgA }], orgB),
+  ],
+  [
+    "main forwardsHere wrapper delegates to module",
+    true,
+    () =>
+      main.includes('import { forwardsHere as endpointForwardsHere } from "./forwardsHere"') &&
+      main.includes("endpointForwardsHere(ep.destinations, currentAgentId)") &&
+      !main.includes("destination_type"),
+  ],
+  [
+    "org switch refreshes agent id via refreshCatalog",
+    true,
+    () =>
+      main.includes('invoke<OrgInfo[]>("switch_org"') &&
+      main.includes("await refreshCatalog()") &&
+      main.includes("applySnapshotIdentity(snap)"),
+  ],
 ];
 
 let failed = 0;
