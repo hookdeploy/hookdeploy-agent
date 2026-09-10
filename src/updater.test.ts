@@ -8,8 +8,10 @@ import {
   remindIfPending,
   releaseUrl,
   runUpdateCheck,
+  sidecarIsBusy,
   startUpdateCheckLoop,
   UPDATE_CHECK_INTERVAL_MS,
+  updateInterruptMessage,
   viewFromState,
 } from "./updater";
 
@@ -123,8 +125,39 @@ function assert(name: string, got: boolean) {
   assert("main window has update banner markup", html.includes('id="update-banner"'));
   assert("banner has Update now and View release", html.includes("Update now") && html.includes("View release"));
   assert("install does not auto-relaunch", !/downloadAndInstall\(\)[\s\S]{0,200}relaunch\(/.test(main));
-  assert("restart invokes shutdown_all then relaunch", main.includes('invoke("shutdown_all")') && main.includes("relaunch()"));
-  assert("lib exposes shutdown_all command", lib.includes("shutdown_all") && supervisor.includes("pub async fn shutdown_all"));
+  assert(
+    "install stops sidecars before downloadAndInstall",
+    main.indexOf("shutdown_for_update") < main.indexOf("downloadAndInstall"),
+  );
+  assert(
+    "restart invokes shutdown_for_update then relaunch",
+    main.includes('invoke("shutdown_for_update")') && main.includes("relaunch()"),
+  );
+  assert(
+    "lib exposes shutdown_for_update command",
+    lib.includes("shutdown_for_update") && supervisor.includes("pub async fn shutdown_for_update"),
+  );
+  assert(
+    "active taps prompt before update install",
+    main.includes("askInstallUpdateWithActiveWork") && main.includes("updateInterruptMessage"),
+  );
+}
+
+{
+  assert(
+    "busy sidecar blocks silent update",
+    sidecarIsBusy({ activeTaps: 1, connectRunning: false, enrollRunning: false }),
+  );
+  assert(
+    "idle sidecar allows update",
+    !sidecarIsBusy({ activeTaps: 0, connectRunning: false, enrollRunning: false }),
+  );
+  assert(
+    "update interrupt message mentions taps",
+    updateInterruptMessage({ activeTaps: 2, connectRunning: false, enrollRunning: false }).includes(
+      "2 active taps",
+    ),
+  );
 }
 
 if (failed) {

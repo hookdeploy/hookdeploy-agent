@@ -799,14 +799,58 @@ pub async fn enroll_submit_code(app: &AppHandle, code: String) -> Result<EnrollP
     }
 }
 
-/// Quit-only teardown: stdin-close every tap, then kill connect, then the
-/// caller invokes `app.exit(0)`.
-pub async fn shutdown_all(app: &AppHandle) -> Result<(), String> {
+#[derive(Debug, Clone, Serialize)]
+pub struct SidecarSnapshot {
+    pub active_taps: usize,
+    pub connect_running: bool,
+    pub enroll_running: bool,
+}
+
+pub fn sidecar_snapshot(app: &AppHandle) -> SidecarSnapshot {
+    let state = app.state::<AppState>();
+    let g = state.inner.lock().expect("state");
+    SidecarSnapshot {
+        active_taps: g.taps.len(),
+        connect_running: g.connect.is_some(),
+        enroll_running: g.enroll.is_some(),
+    }
+}
+
+fn stop_enroll(app: &AppHandle) -> Result<bool, String> {
+    let state = app.state::<AppState>();
+    let mut g = state.inner.lock().expect("state");
+    if let Some(child) = g.enroll.take() {
+        child.kill().map_err(|e| e.to_string())?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn wait_child_exited(child: &mut Child, label: &str, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Err(e) => return Err(format!("could not wait for {label}: {e}")),
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    match child.try_wait() {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(format!("{label} is still running")),
+        Err(e) => Err(format!("could not verify {label} stopped: {e}")),
+    }
+}
+
+async fn stop_all_taps(app: &AppHandle, strict: bool) -> Result<(), String> {
     let ids: Vec<String> = {
         let state = app.state::<AppState>();
         let g = state.inner.lock().expect("state");
         g.taps.keys().cloned().collect()
     };
+    let mut errors = Vec::new();
     for id in ids {
         let proc = {
             let state = app.state::<AppState>();
@@ -815,12 +859,46 @@ pub async fn shutdown_all(app: &AppHandle) -> Result<(), String> {
         };
         if let Some(mut proc) = proc {
             let local = close_stdin_and_wait(&mut proc, &id, TAP_STOP_TIMEOUT, true);
-            if !matches!(local, Ok(LocalStop::ExitedCleanly)) {
+            if strict {
+                if let Err(e) = wait_child_exited(&mut proc.child, &format!("tap {id}"), Duration::from_secs(2)) {
+                    errors.push(e);
+                }
+            } else if !matches!(local, Ok(LocalStop::ExitedCleanly)) {
                 let _ = sidecar_output(app, &["tap", "stop", &id]).await;
             }
         }
     }
+    if strict && !errors.is_empty() {
+        return Err(format!(
+            "Could not stop active taps: {}. Close HookDeploy Agent from the tray and try again.",
+            errors.join("; ")
+        ));
+    }
+    Ok(())
+}
+
+/// Quit-only teardown: stdin-close every tap, then kill connect/enroll, then the
+/// caller invokes `app.exit(0)`.
+pub async fn shutdown_all(app: &AppHandle) -> Result<(), String> {
+    stop_all_taps(app, false).await?;
     stop_connect(app)?;
+    let _ = stop_enroll(app)?;
+    Ok(())
+}
+
+/// Update/restart teardown: stop every sidecar child and verify it exited before
+/// the updater installer replaces `hookdeployed` in the bundle.
+pub async fn shutdown_for_update(app: &AppHandle) -> Result<(), String> {
+    stop_all_taps(app, true).await?;
+    stop_connect(app)?;
+    stop_enroll(app)?;
+    let remaining = sidecar_snapshot(app);
+    if remaining.active_taps > 0 || remaining.connect_running || remaining.enroll_running {
+        return Err(
+            "Could not stop the agent background process. Quit HookDeploy Agent from the tray and try again."
+                .into(),
+        );
+    }
     Ok(())
 }
 
@@ -899,6 +977,34 @@ mod tests {
         assert_eq!(
             default_certs_dir(),
             go_user_config_dir.join("hookdeploy").join("certs")
+        );
+    }
+
+    #[test]
+    fn shutdown_for_update_stops_enroll_and_verifies_sidecars() {
+        let src = include_str!("supervisor.rs");
+        assert!(
+            src.contains("pub async fn shutdown_for_update"),
+            "update path must expose shutdown_for_update"
+        );
+        assert!(
+            src.contains("stop_enroll(app)"),
+            "shutdown paths must stop enroll sidecar"
+        );
+        let update = src
+            .split("pub async fn shutdown_for_update")
+            .nth(1)
+            .expect("shutdown_for_update body")
+            .split("pub async fn shutdown_all")
+            .next()
+            .unwrap_or_else(|| src.split("pub async fn shutdown_for_update").nth(1).unwrap());
+        assert!(
+            update.contains("stop_all_taps(app, true)"),
+            "update shutdown must use strict tap stop"
+        );
+        assert!(
+            update.contains("sidecar_snapshot(app)"),
+            "update shutdown must verify no sidecars remain"
         );
     }
 

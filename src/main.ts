@@ -19,8 +19,11 @@ import {
   releaseUrl,
   remindIfPending,
   showPendingBanner,
+  sidecarIsBusy,
   startUpdateCheckLoop,
+  updateInterruptMessage,
   viewFromState,
+  type SidecarActivity,
   type UpdaterState,
 } from "./updater";
 import {
@@ -148,6 +151,7 @@ let currentAgentId: string | null = null;
 let endpointsPage = 1;
 let selectedDest: { endpointId: string; destId: string | null } | null = null;
 let pendingEndTaps: { tapIds: string[]; endpointName: string } | null = null;
+let pendingUpdateInstall = false;
 let pendingStarts: Array<{
   key: string;
   endpoint: string;
@@ -642,11 +646,17 @@ function renderEndpointsPage() {
     </div>`;
 }
 
-function setConfirmOpen(open: boolean, message?: string) {
+function setConfirmOpen(
+  open: boolean,
+  message?: string,
+  okLabel = "End tap",
+  title = "End tap?",
+) {
   $("confirm-dialog").classList.toggle("hidden", !open);
   if (message) $("confirm-message").textContent = message;
+  $("confirm-title").textContent = title;
   ($("confirm-ok") as HTMLButtonElement).disabled = false;
-  ($("confirm-ok") as HTMLButtonElement).textContent = "End tap";
+  ($("confirm-ok") as HTMLButtonElement).textContent = okLabel;
 }
 
 function askEndTap(ep: EndpointInfo) {
@@ -1748,10 +1758,53 @@ async function runFirstLaunchPass() {
   markFirstLaunchDone(localStorage);
 }
 
+async function readSidecarActivity(): Promise<SidecarActivity> {
+  const snap = await invoke<{
+    active_taps: number;
+    connect_running: boolean;
+    enroll_running: boolean;
+  }>("sidecar_snapshot");
+  return {
+    activeTaps: snap.active_taps,
+    connectRunning: snap.connect_running,
+    enrollRunning: snap.enroll_running,
+  };
+}
+
+async function stopSidecarsForUpdate(): Promise<void> {
+  setUpdateStatus("Stopping taps and disconnecting…");
+  await invoke("shutdown_for_update");
+}
+
+function askInstallUpdateWithActiveWork(activity: SidecarActivity) {
+  pendingUpdateInstall = true;
+  setConfirmOpen(
+    true,
+    updateInterruptMessage(activity),
+    "Update now",
+    "Stop and update?",
+  );
+}
+
 async function installPendingUpdate() {
+  if (!pendingUpdate || updaterState.installing || updaterState.installed) return;
+  try {
+    const activity = await readSidecarActivity();
+    if (sidecarIsBusy(activity)) {
+      askInstallUpdateWithActiveWork(activity);
+      return;
+    }
+    await runInstallPendingUpdate();
+  } catch (e) {
+    commitUpdater(failInstall(updaterState, invokeError(e)));
+  }
+}
+
+async function runInstallPendingUpdate() {
   if (!pendingUpdate || updaterState.installing || updaterState.installed) return;
   commitUpdater(beginInstall(updaterState));
   try {
+    await stopSidecarsForUpdate();
     await pendingUpdate.downloadAndInstall();
     commitUpdater(finishInstall(updaterState));
     await showMainWindow();
@@ -1766,11 +1819,13 @@ async function restartAfterUpdate() {
   const restart = document.getElementById("restart-update") as HTMLButtonElement | null;
   if (action) action.disabled = true;
   if (restart) restart.disabled = true;
-  setUpdateStatus("Stopping taps and disconnecting…");
   try {
-    await invoke("shutdown_all");
-  } catch {
-    /* still relaunch — same as tray Quit ignoring teardown errors */
+    await stopSidecarsForUpdate();
+  } catch (e) {
+    if (action) action.disabled = false;
+    if (restart) restart.disabled = false;
+    setUpdateStatus(invokeError(e));
+    return;
   }
   await relaunch();
 }
@@ -1847,14 +1902,22 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   $("confirm-cancel").addEventListener("click", () => {
     pendingEndTaps = null;
+    pendingUpdateInstall = false;
     setConfirmOpen(false);
   });
   $("confirm-ok").addEventListener("click", () => {
+    if (pendingUpdateInstall) {
+      pendingUpdateInstall = false;
+      setConfirmOpen(false);
+      void runInstallPendingUpdate();
+      return;
+    }
     void confirmEndTap();
   });
   $("confirm-dialog").addEventListener("click", (ev) => {
     if (ev.target === $("confirm-dialog")) {
       pendingEndTaps = null;
+      pendingUpdateInstall = false;
       setConfirmOpen(false);
     }
   });
