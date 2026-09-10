@@ -3,11 +3,15 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   applyCheckOutcome,
+  beginInstall,
   dismissBanner,
+  failInstall,
+  finishInstall,
   initialUpdaterState,
   remindIfPending,
   releaseUrl,
   runUpdateCheck,
+  showPendingBanner,
   sidecarIsBusy,
   startUpdateCheckLoop,
   UPDATE_CHECK_INTERVAL_MS,
@@ -116,6 +120,108 @@ function assert(name: string, got: boolean) {
   state = dismissBanner(state);
   state = remindIfPending(state);
   assert("remindIfPending does not resurrect a dismissed available banner", state.banner === "hidden");
+}
+
+// Install lifecycle: begin → finish (distinct from available).
+{
+  const available = applyCheckOutcome(initialUpdaterState(), { kind: "available", version: "0.2.0" }, false);
+  let state = beginInstall(available);
+  assert("beginInstall sets installing", state.installing);
+  assert("beginInstall shows downloading status", state.settingsStatus === "Downloading update…");
+  const mid = viewFromState(state);
+  assert("beginInstall keeps install offer visible", mid.showInstall && !mid.showRestart);
+  assert("beginInstall keeps available banner kind", mid.bannerKind === "available");
+  assert("main disables banner action while installing", main.includes("action.disabled = next.installing"));
+
+  state = finishInstall(state);
+  const installed = viewFromState(state);
+  const availView = viewFromState(available);
+  assert("finishInstall clears installing and marks installed", !state.installing && state.installed);
+  assert("finishInstall shows installed banner", installed.bannerKind === "installed" && installed.bannerVisible);
+  assert("finishInstall offers restart not install", installed.showRestart && !installed.showInstall);
+  assert("finishInstall hides tray update item", !installed.trayUpdateItem);
+  assert(
+    "finishInstall status prompts restart",
+    state.settingsStatus === "Update installed. Restart to finish.",
+  );
+  assert(
+    "installed state is distinct from available",
+    availView.bannerKind === "available" && availView.showInstall && !availView.showRestart,
+  );
+}
+
+// remindIfPending: resurfacing a dismissed restart prompt (installed case).
+{
+  let state = finishInstall(
+    beginInstall(applyCheckOutcome(initialUpdaterState(), { kind: "available", version: "0.2.0" }, false)),
+  );
+  state = dismissBanner(state);
+  assert("dismiss hides installed restart banner", state.banner === "hidden" && state.installed);
+  state = remindIfPending(state);
+  const view = viewFromState(state);
+  assert("remindIfPending resurfaces installed restart prompt", state.banner === "installed");
+  assert("resurfaced installed banner offers restart", view.showRestart && view.bannerVisible);
+}
+
+// failInstall: error surfaced, not stuck installing, retry still available.
+{
+  let state = beginInstall(
+    applyCheckOutcome(initialUpdaterState(), { kind: "available", version: "0.2.0" }, false),
+  );
+  state = failInstall(state, "download failed");
+  assert("failInstall clears installing", !state.installing);
+  assert("failInstall surfaces error in settings", state.settingsStatus === "download failed");
+  assert("failInstall keeps pending version for retry", state.availableVersion === "0.2.0" && !state.installed);
+  const view = viewFromState(state);
+  assert("failInstall leaves user able to retry install", view.showInstall && view.bannerKind === "available");
+  assert(
+    "failInstall default message when blank",
+    failInstall(beginInstall(initialUpdaterState()), "  ").settingsStatus ===
+      "Could not install the update.",
+  );
+}
+
+// showPendingBanner: tray menu resurface for available and installed states.
+{
+  let state = applyCheckOutcome(initialUpdaterState(), { kind: "available", version: "0.2.0" }, false);
+  state = dismissBanner(state);
+  state = showPendingBanner(state);
+  const availableView = viewFromState(state);
+  assert("showPendingBanner resurfaces available update banner", state.banner === "available");
+  assert("showPendingBanner restores tray update item", availableView.trayUpdateItem);
+  assert(
+    "tray click wires showPendingBanner",
+    main.includes('listen("update-tray-clicked"') && main.includes("showPendingBanner(updaterState)"),
+  );
+
+  const installed = finishInstall(
+    beginInstall(applyCheckOutcome(initialUpdaterState(), { kind: "available", version: "0.2.0" }, false)),
+  );
+  const dismissed = dismissBanner(installed);
+  const resurfaced = showPendingBanner(dismissed);
+  const installedView = viewFromState(resurfaced);
+  assert("showPendingBanner resurfaces installed restart from tray", resurfaced.banner === "installed");
+  assert("installed tray resurface offers restart not install", installedView.showRestart && !installedView.showInstall);
+  assert(
+    "showPendingBanner noop when nothing pending",
+    showPendingBanner(initialUpdaterState()).banner === "hidden",
+  );
+}
+
+// Checks are ignored while installing or after install completes.
+{
+  const installing = beginInstall(
+    applyCheckOutcome(initialUpdaterState(), { kind: "available", version: "0.2.0" }, false),
+  );
+  assert(
+    "check ignored while installing",
+    applyCheckOutcome(installing, { kind: "none" }, false) === installing,
+  );
+  const installed = finishInstall(installing);
+  assert(
+    "check ignored after install completes",
+    applyCheckOutcome(installed, { kind: "available", version: "0.3.0" }, false) === installed,
+  );
 }
 
 {
