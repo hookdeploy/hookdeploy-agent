@@ -95,6 +95,16 @@ async fn shutdown_all(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn shutdown_for_update(app: tauri::AppHandle) -> Result<(), String> {
+    supervisor::shutdown_for_update(&app).await
+}
+
+#[tauri::command]
+fn sidecar_snapshot(app: tauri::AppHandle) -> supervisor::SidecarSnapshot {
+    supervisor::sidecar_snapshot(&app)
+}
+
+#[tauri::command]
 fn set_update_available(version: Option<String>) {
     tray::set_update_available(version.as_deref());
 }
@@ -124,6 +134,8 @@ pub fn run() {
             enroll_submit_code,
             list_ports,
             shutdown_all,
+            shutdown_for_update,
+            sidecar_snapshot,
             set_update_available
         ])
         .setup(|app| {

@@ -143,6 +143,32 @@ export function releaseUrl(version: string): string {
   return `${RELEASES_PAGE}/tag/${encodeURIComponent(tag)}`;
 }
 
+export interface SidecarActivity {
+  activeTaps: number;
+  connectRunning: boolean;
+  enrollRunning: boolean;
+}
+
+export function sidecarIsBusy(activity: SidecarActivity): boolean {
+  return activity.activeTaps > 0 || activity.connectRunning || activity.enrollRunning;
+}
+
+/** Shown before stopping sidecars for an update when taps are live. */
+export function updateInterruptMessage(activity: SidecarActivity): string {
+  const parts: string[] = [];
+  if (activity.activeTaps > 0) {
+    parts.push(
+      activity.activeTaps === 1
+        ? "1 active tap"
+        : `${activity.activeTaps} active taps`,
+    );
+  }
+  if (activity.connectRunning) parts.push("the relay connection");
+  if (activity.enrollRunning) parts.push("enrollment in progress");
+  const what = parts.length === 1 ? parts[0] : parts.join(" and ");
+  return `Updating will stop ${what}. Continue?`;
+}
+
 export async function runUpdateCheck(
   checkFn: () => Promise<{ version: string } | null>,
 ): Promise<CheckOutcome> {
