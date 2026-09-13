@@ -2055,6 +2055,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     commitUpdater(showPendingBanner(updaterState));
     void showMainWindow();
   });
+  await listen<string>("tray-connect-error", (e) => {
+    showError(e.payload);
+  });
 
   let pendingEnroll: Snapshot["enroll_phase"] | null = null;
   try {

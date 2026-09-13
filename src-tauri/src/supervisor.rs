@@ -26,9 +26,34 @@ pub const TAP_STOP_TIMEOUT: Duration = Duration::from_secs(8);
 pub const TAP_STOP_UNCONFIRMED: &str =
     "Tap process stopped locally, but couldn't confirm it stopped on the server -- check the dashboard.";
 
-enum LocalStop {
+pub(crate) enum LocalStop {
     ExitedCleanly,
     ForceKilled,
+}
+
+/// Next step after stopping a local tap child — extracted for unit tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopTapNext {
+    Done,
+    ConfirmServer,
+}
+
+pub(crate) fn stop_tap_next_step(
+    had_local_proc: bool,
+    local: Option<Result<LocalStop, String>>,
+) -> StopTapNext {
+    if had_local_proc {
+        match local {
+            Some(Ok(LocalStop::ExitedCleanly)) => StopTapNext::Done,
+            _ => StopTapNext::ConfirmServer,
+        }
+    } else {
+        StopTapNext::ConfirmServer
+    }
+}
+
+fn connect_session_active(g: &Inner) -> bool {
+    g.connect.is_some()
 }
 
 pub struct AppState {
@@ -278,8 +303,25 @@ fn remember_active_org(app: &AppHandle, orgs: &[OrgInfo]) {
 }
 
 pub async fn switch_org(app: &AppHandle, id: String) -> Result<Vec<OrgInfo>, String> {
+    let restart_connect = {
+        let state = app.state::<AppState>();
+        let g = state.inner.lock().expect("state");
+        connect_session_active(&g)
+    };
+
+    if restart_connect {
+        stop_connect(app)?;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
     sidecar_output(app, &["switch", &id]).await?;
-    list_orgs(app).await
+    let orgs = list_orgs(app).await?;
+
+    if restart_connect {
+        start_connect(app, None).await?;
+    }
+
+    Ok(orgs)
 }
 
 pub async fn unenroll(app: &AppHandle) -> Result<Vec<OrgInfo>, String> {
@@ -572,27 +614,42 @@ pub async fn stop_tap(app: &AppHandle, tap_id: String) -> Result<(), String> {
         let mut g = state.inner.lock().expect("state");
         g.taps.remove(&tap_id)
     };
-    if let Some(mut proc) = proc {
+    let had_local_proc = proc.is_some();
+    let local = if let Some(mut proc) = proc {
         let id = tap_id.clone();
-        let local = tauri::async_runtime::spawn_blocking(move || {
-            close_stdin_and_wait(&mut proc, &id, TAP_STOP_TIMEOUT, true)
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-        match local {
-            Ok(LocalStop::ExitedCleanly) => return Ok(()),
-            Ok(LocalStop::ForceKilled) | Err(_) => {
-                return confirm_server_tap_stop(app, &tap_id).await;
-            }
-        }
+        Some(
+            tauri::async_runtime::spawn_blocking(move || {
+                close_stdin_and_wait(&mut proc, &id, TAP_STOP_TIMEOUT, true)
+            })
+            .await
+            .map_err(|e| e.to_string())?,
+        )
+    } else {
+        None
+    };
+
+    match stop_tap_next_step(had_local_proc, local) {
+        StopTapNext::Done => Ok(()),
+        StopTapNext::ConfirmServer => confirm_server_tap_stop(app, &tap_id).await,
     }
-    confirm_server_tap_stop(app, &tap_id).await
 }
 
 async fn confirm_server_tap_stop(app: &AppHandle, tap_id: &str) -> Result<(), String> {
     match sidecar_output(app, &["tap", "stop", tap_id]).await {
         Ok(_) => Ok(()),
         Err(_) => Err(TAP_STOP_UNCONFIRMED.to_string()),
+    }
+}
+
+/// Best-effort server stop on quit — same confirm path as `stop_tap`, bounded so
+/// shutdown does not hang when the server is unreachable.
+async fn confirm_server_tap_stop_best_effort(app: &AppHandle, tap_id: &str) {
+    let result = tokio::time::timeout(TAP_STOP_TIMEOUT, confirm_server_tap_stop(app, tap_id)).await;
+    if matches!(result, Err(_) | Ok(Err(_))) {
+        eprintln!(
+            "[hookdeploy-agent] could not confirm tap stop for {} on quit",
+            tap_id
+        );
     }
 }
 
@@ -864,7 +921,7 @@ async fn stop_all_taps(app: &AppHandle, strict: bool) -> Result<(), String> {
                     errors.push(e);
                 }
             } else if !matches!(local, Ok(LocalStop::ExitedCleanly)) {
-                let _ = sidecar_output(app, &["tap", "stop", &id]).await;
+                confirm_server_tap_stop_best_effort(app, &id).await;
             }
         }
     }
@@ -1005,6 +1062,107 @@ mod tests {
         assert!(
             update.contains("sidecar_snapshot(app)"),
             "update shutdown must verify no sidecars remain"
+        );
+    }
+
+    #[test]
+    fn stop_tap_next_step_clean_exit_skips_server_confirm() {
+        assert_eq!(
+            stop_tap_next_step(true, Some(Ok(LocalStop::ExitedCleanly))),
+            StopTapNext::Done
+        );
+    }
+
+    #[test]
+    fn stop_tap_next_step_force_kill_requires_server_confirm() {
+        assert_eq!(
+            stop_tap_next_step(true, Some(Ok(LocalStop::ForceKilled))),
+            StopTapNext::ConfirmServer
+        );
+    }
+
+    #[test]
+    fn stop_tap_next_step_local_error_requires_server_confirm() {
+        assert_eq!(
+            stop_tap_next_step(true, Some(Err("stdin close failed".into()))),
+            StopTapNext::ConfirmServer
+        );
+    }
+
+    #[test]
+    fn stop_tap_next_step_orphan_tap_requires_server_confirm() {
+        assert_eq!(stop_tap_next_step(false, None), StopTapNext::ConfirmServer);
+    }
+
+    #[test]
+    fn stop_tap_uses_confirm_server_tap_stop_on_force_kill() {
+        let src = include_str!("supervisor.rs");
+        let body = src
+            .split("pub async fn stop_tap")
+            .nth(1)
+            .expect("stop_tap")
+            .split("async fn confirm_server_tap_stop")
+            .next()
+            .expect("stop_tap body");
+        assert!(
+            body.contains("stop_tap_next_step"),
+            "stop_tap must branch via stop_tap_next_step"
+        );
+        assert!(
+            body.contains("StopTapNext::ConfirmServer => confirm_server_tap_stop"),
+            "stop_tap must call confirm_server_tap_stop when server confirm is needed"
+        );
+        assert!(
+            body.contains("StopTapNext::Done => Ok(())"),
+            "stop_tap must only return Ok immediately on clean local exit"
+        );
+    }
+
+    #[test]
+    fn switch_org_restarts_connect_only_when_session_active() {
+        let src = include_str!("supervisor.rs");
+        let body = src
+            .split("pub async fn switch_org")
+            .nth(1)
+            .expect("switch_org")
+            .split("pub async fn unenroll")
+            .next()
+            .expect("switch_org body");
+        assert!(
+            body.contains("connect_session_active"),
+            "switch_org must detect an active connect child"
+        );
+        assert!(
+            body.contains("stop_connect(app)"),
+            "switch_org must stop connect before switching when active"
+        );
+        assert!(
+            body.contains("start_connect(app, None)"),
+            "switch_org must restart connect after switching when active"
+        );
+        assert!(
+            body.contains("if restart_connect"),
+            "switch_org must gate stop/restart on active connect"
+        );
+    }
+
+    #[test]
+    fn quit_path_uses_confirmed_tap_stop_not_discarded_sidecar_output() {
+        let src = include_str!("supervisor.rs");
+        let body = src
+            .split("async fn stop_all_taps")
+            .nth(1)
+            .expect("stop_all_taps")
+            .split("pub async fn shutdown_all")
+            .next()
+            .expect("stop_all_taps body");
+        assert!(
+            body.contains("confirm_server_tap_stop_best_effort"),
+            "non-strict quit must call confirmed server tap stop"
+        );
+        assert!(
+            !body.contains("let _ = sidecar_output(app, &[\"tap\", \"stop\""),
+            "quit must not discard tap stop sidecar result"
         );
     }
 
