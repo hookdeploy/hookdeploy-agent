@@ -135,6 +135,12 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// Tray-initiated connect failures surface in the main window (same as in-app connect).
+pub fn surface_connect_error(app: &AppHandle, message: String) {
+    show_main(app);
+    let _ = app.emit("tray-connect-error", message);
+}
+
 /// Tray Quit: stdin-close taps, stop connect, then exit. The only exit path
 /// from this menu item — not a bare `app.exit` / `process::exit`.
 pub fn on_quit(app: &AppHandle) {
@@ -160,7 +166,9 @@ fn on_connection_click(app: &AppHandle) {
         Some(ConnectionClick::StartConnect) => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                let _ = start_connect(&app, None).await;
+                if let Err(message) = start_connect(&app, None).await {
+                    surface_connect_error(&app, message);
+                }
             });
         }
         None => {}
@@ -509,5 +517,41 @@ mod tests {
         assert!(prod.contains("start_connect(&app, None)"));
         assert!(prod.contains("Some(ConnectionClick::StopConnect) =>"));
         assert!(prod.contains("stop_connect(app)"));
+    }
+
+    #[test]
+    fn tray_connect_failure_surfaces_to_main_window() {
+        let src = include_str!("tray.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap();
+        let handler = prod
+            .split("fn on_connection_click")
+            .nth(1)
+            .expect("on_connection_click")
+            .split("/// Insert or remove")
+            .next()
+            .unwrap_or_else(|| {
+                prod.split("fn on_connection_click")
+                    .nth(1)
+                    .expect("on_connection_click")
+                    .split("pub fn set_update_available")
+                    .next()
+                    .unwrap()
+            });
+        assert!(
+            handler.contains("surface_connect_error"),
+            "tray connect must surface errors instead of swallowing them"
+        );
+        assert!(
+            !handler.contains("let _ = start_connect"),
+            "tray connect must not discard start_connect errors"
+        );
+        assert!(
+            prod.contains("tray-connect-error"),
+            "tray must emit tray-connect-error for the webview"
+        );
+        assert!(
+            prod.contains("show_main(app)"),
+            "tray connect errors must open the main window"
+        );
     }
 }

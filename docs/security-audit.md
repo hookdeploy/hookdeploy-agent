@@ -12,7 +12,7 @@
 
 1. **`connect-log` emits raw sidecar stdout/stderr onto the Tauri event bus** (`supervisor.rs` 338, 369). The webview does not subscribe today, but any future listener (or a compromised webview that can `listen`) gets unfiltered CLI lines. Enroll failure also dumps the entire enroll buffer into `EnrollPhase::Failed.message` and then the UI (`supervisor.rs` 673–679). CLI lines can include cert-store paths and `CN=` / `OU=` (`parse.rs` 507–516). Not a renewal token, but it is more than “display status.”
 2. **CSP is explicitly disabled** (`tauri.conf.json` 28–29: `"csp": null`) while the UI loads **remote Google Fonts** (`styles.css` 1). Combined with `opener:default`, a webview XSS (or a malicious injected script in `tauri dev`) can open arbitrary URLs. Production still has no CSP net.
-3. **`stop_tap` force-kill after 8s reports success and skips the server stop** (`supervisor.rs` 507–525, 546–549). If stdin-close does not finish the CLI’s stop POST in time, the local child is killed, `Ok(())` is returned, and `tap stop` is never called. The dashboard can still show a live tap until the 8h server ceiling.
+3. **`stop_tap` server confirmation after force-kill** — **fixed (2026-09).** After stdin-close timeout, force-kill now falls through to `confirm_server_tap_stop` (`tap stop` sidecar); failure returns `TAP_STOP_UNCONFIRMED` instead of a silent `Ok(())`. Quit uses the same confirm path via `confirm_server_tap_stop_best_effort` with an 8s timeout so shutdown does not hang.
 
 ### UX / defense-in-depth (fine to defer, but do not forget)
 
@@ -285,19 +285,17 @@ Double-spawn: `start_connect` returns `Ok(())` if `connect.is_some()` (291–295
 
 ### 15. `stop_tap` timeout
 
-```21:23:src-tauri/src/supervisor.rs
+```21:27:src-tauri/src/supervisor.rs
 pub const TAP_STOP_TIMEOUT: Duration = Duration::from_secs(8);
+pub const TAP_STOP_UNCONFIRMED: &str =
+    "Tap process stopped locally, but couldn't confirm it stopped on the server -- check the dashboard.";
 ```
 
-`close_stdin_and_wait(..., TAP_STOP_TIMEOUT, true)` (515–516): drop stdin, poll `try_wait` for 8s. On timeout with `kill_after_timeout: true`: `child.kill()` + `wait()`, **`return Ok(())`** (546–549). That `Ok` makes `stop_tap` **return success and skip** `tap stop` (520–522).
+**Current behavior (fixed):** `close_stdin_and_wait` still uses an 8s deadline with force-kill so Quit cannot hang. After a clean local exit, `stop_tap` returns `Ok(())` (CLI runs server stop on stdin EOF). After force-kill or local error, `stop_tap` calls `confirm_server_tap_stop` (`hookdeployed tap stop <id>`). If that sidecar call fails, the UI gets `TAP_STOP_UNCONFIRMED` — not a silent success.
 
-User-visible: stop looks successful. Server tap may still be live. No copy that says “force-killed; check the dashboard.”
+Quit (`shutdown_all` → `stop_all_taps(app, false)`) uses `confirm_server_tap_stop_best_effort` with the same 8s timeout: best-effort server confirm without blocking app exit if the server is unreachable.
 
-If there was **no** local child (already gone), it does call `tap stop` (524). That path is fine.
-
-**Assessment:** 8s + kill is reasonable so Quit cannot hang. Returning `Ok` without a server stop after kill is the bug. Either always `tap stop` after a local kill, or surface a warning. Not an injection issue; it *is* a “I clicked Stop and traffic still flows” issue.
-
-Quit (`shutdown_all`, 736–751) uses the same 8s+kill and then `stop_connect`. Same local-kill-without-API-stop risk for each tap.
+**Assessment:** 8s local wait + server confirm is the intended design. Remaining gap: no behavioral integration tests for the full stop path (unit tests cover `stop_tap_next_step` branching).
 
 ---
 
