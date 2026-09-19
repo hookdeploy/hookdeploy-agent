@@ -7,6 +7,11 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { enable, disable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { forwardsHere as endpointForwardsHere } from "./forwardsHere";
+import {
+  connMenuChecks,
+  relaySubtitle,
+  type ConnectPhase,
+} from "./connectionStatus";
 import { isFirstLaunch, markFirstLaunchDone, setAutostartEnabled } from "./firstLaunch";
 import {
   UPDATE_CHECK_INTERVAL_MS,
@@ -36,7 +41,7 @@ import {
   splitEnrollCode,
 } from "./enrollOtp";
 
-type Phase = "disconnected" | "connecting" | "connected" | "reconnecting" | "revoked" | "clock_skew";
+type Phase = ConnectPhase;
 type Page = "dashboard" | "endpoints" | "taps" | "settings";
 
 interface ConnectStatus {
@@ -218,12 +223,6 @@ function applyAgentName() {
   }
 }
 
-function relayInstanceId(relay: string): string {
-  const host = relay.split("/")[0].split(":")[0];
-  const name = host.split(".")[0] ?? host;
-  return name.replace(/^relay-/i, "") || relay;
-}
-
 function connectionLive(phase: Phase): boolean {
   return phase === "connected" || phase === "connecting" || phase === "reconnecting";
 }
@@ -232,17 +231,19 @@ function applyStatus(s: ConnectStatus) {
   connectPhase = s.phase;
   $("status-dot").className = `dot ${s.phase}`;
   $("status-phase").textContent = formatPhaseLabel(s.phase);
-  const live = connectionLive(s.phase);
-  $("conn-opt-connected").querySelector(".conn-check")?.classList.toggle("hidden", !live);
-  $("conn-opt-disconnected").querySelector(".conn-check")?.classList.toggle("hidden", live);
+  const checks = connMenuChecks(s.phase);
+  $("conn-opt-connected").querySelector(".conn-check")?.classList.toggle("hidden", !checks.connected);
+  $("conn-opt-disconnected").querySelector(".conn-check")?.classList.toggle("hidden", !checks.disconnected);
   const btn = $("conn-btn") as HTMLButtonElement;
   btn.disabled = s.phase === "revoked";
   if (s.phase === "revoked") closeConnMenu();
   const relay = $("status-relay");
-  if (s.relay && live) {
-    relay.textContent = `Connected to ${relayInstanceId(s.relay)}`;
+  const subtitle = relaySubtitle(s.phase, s.relay);
+  if (subtitle) {
+    relay.textContent = subtitle.text;
     relay.classList.remove("hidden");
-    relay.title = s.relay;
+    if (subtitle.title) relay.title = subtitle.title;
+    else relay.removeAttribute("title");
   } else {
     relay.textContent = "";
     relay.removeAttribute("title");
